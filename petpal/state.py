@@ -6,6 +6,8 @@ from typing import Any, NotRequired
 
 from langchain.agents.middleware import AgentState
 
+from .schemas import AgentResponse
+
 
 class PetPalState(AgentState):
     """대화 중 변하는 값. Runtime Context(user_id)·Store(user_preference)와 구분된다."""
@@ -15,3 +17,4 @@ class PetPalState(AgentState):
     selected_animal: NotRequired[dict[str, Any]]  # 연계 추천의 기준이 되는 동물
     last_search_filters: NotRequired[dict[str, Any]]
     last_tool_results: NotRequired[dict[str, Any]]  # grounded 대조 근거
+    structured_response: NotRequired[AgentResponse | None]

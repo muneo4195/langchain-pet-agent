@@ -20,6 +20,11 @@ BANNER = """
 
 def render(state: dict) -> str:
     out: list[str] = []
+    guardrail = state.get("guardrail") or {}
+    if guardrail.get("blocked"):
+        messages = state.get("messages") or []
+        return text_of(messages[-1]) if messages else "요청이 차단되었습니다."
+
     response = state.get("structured_response")
     if isinstance(response, AgentResponse):
         out.append(response.message)

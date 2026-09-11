@@ -27,7 +27,16 @@ from langchain.messages import AIMessage, HumanMessage
 from .config import Settings, build_model
 from .guardrails import block_message, mask_pii, rule_screen
 from .prompts import guardrail_prompt, intent_prompt
-from .parsing import is_closed_notice, age_years, match_score, normalize_size, parse_weight_kg, size_of, urgency_of
+from .parsing import (
+    age_years,
+    is_closed_notice,
+    is_inactive_place,
+    match_score,
+    normalize_size,
+    parse_weight_kg,
+    size_of,
+    urgency_of,
+)
 from .schemas import AgentResponse, GuardrailClassification, IntentClassification
 from .services import get_services
 from .state import PetPalState
@@ -66,32 +75,45 @@ def _last_human(messages: list[Any]) -> str:
     return ""
 
 
+def _recent_humans(messages: list[Any], limit: int = 2) -> list[str]:
+    """분할 요청 판별에 필요한 최근 사용자 발화만 시간순으로 반환한다."""
+    texts = [text_of(msg) for msg in messages or [] if isinstance(msg, HumanMessage)]
+    return [text for text in texts[-limit:] if text]
+
+
 # ────────────────────────────────────────────── ① 입력 가드레일 + 의도 분류
 @before_agent(state_schema=PetPalState, can_jump_to=["end"])
 def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
     """규칙 필터 1차 → GPT-5-nano 2차. 위반이면 Agent 호출 자체를 중단한다."""
-    text = _last_human(state["messages"])
+    recent = _recent_humans(state["messages"])
+    text = recent[-1] if recent else ""
     if not text:
         return None
 
     previous_intent = state.get("intent")
-    label, decided = rule_screen(text)
+    # 이전 턴에서 대상을 정하고 현재 턴에서 위해·거래를 요청하는 분할 우회도 함께 검사한다.
+    screen_text = " ".join(recent)
+    label, decided = rule_screen(screen_text)
     confidence = 1.0 if decided else 0.0
 
     if not decided:  # 애매한 것만 모델에게 넘긴다(설계 원칙: 저비용 필터 우선)
         try:
             verdict = classifier().with_structured_output(GuardrailClassification).invoke(
-                guardrail_prompt(text, previous_intent)
+                guardrail_prompt(text, previous_intent, recent[:-1])
             )
             label, confidence = verdict.label, verdict.confidence
         except Exception as exc:
-            # fail-open 금지 — 규칙 필터가 이미 off_topic 후보로 본 입력이므로 그 판정을 유지한다.
-            log.warning("가드레일 분류 실패, 규칙 판정(%s)을 유지합니다: %s", label, exc)
+            # 정상 후보도 의미 검증을 마치지 못했으므로 장애 중에는 안전하게 차단한다.
+            if label == "normal":
+                label = "off_topic"
+            log.warning("가드레일 분류 실패, 안전 기본값(%s)을 적용합니다: %s", label, exc)
             confidence = 0.0
 
     if label != "normal":
         return {
-            "messages": [AIMessage(content=block_message(label, text))],
+            "messages": [AIMessage(content=block_message(label, screen_text))],
+            # 체크포인터에 남아 있는 이전 턴 응답이 UI에서 다시 출력되지 않도록 지운다.
+            "structured_response": None,
             "jump_to": "end",
             "guardrail": {"label": label, "confidence": confidence, "blocked": True},
         }
@@ -106,7 +128,12 @@ def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
         log.warning("의도 분류 실패, 전체 Tool 노출: %s", exc)
         intent = ""
 
-    return {"intent": intent, "guardrail": {"label": "normal", "confidence": confidence, "blocked": False}}
+    return {
+        "intent": intent,
+        "guardrail": {"label": "normal", "confidence": confidence, "blocked": False},
+        # 매 턴 새 응답을 생성하므로 이전 턴의 구조화 응답을 먼저 비운다.
+        "structured_response": None,
+    }
 
 
 # ────────────────────────────────────────────── ② 의도별 Tool 가시성 제한
@@ -194,7 +221,8 @@ def tool_cache(request, handler):
     if call["name"] not in LIST_TOOLS:
         return handler(request)
 
-    s = get_services().settings
+    # 캐시 TTL만 필요하므로 코드표/API 클라이언트까지 초기화하지 않는다.
+    s = Settings.load()
     ttl = s.animal_cache_ttl if call["name"] == "search_rescued_animals" else s.travel_cache_ttl
     key = json.dumps([call["name"], call.get("args")], sort_keys=True, ensure_ascii=False, default=str)
 
@@ -266,7 +294,7 @@ def result_filter(request, handler):
         update["last_search_filters"] = wanted
 
     elif name == "search_pet_friendly_travel":
-        rows = payload.get("items", [])[:MAX_CARDS]
+        rows = [row for row in payload.get("items", []) if not is_inactive_place(row)][:MAX_CARDS]
         # 2.2 흐름 6단계 — 동반 조건은 목록 API 에 없으므로 여기서 상세를 붙인다.
         # 모델의 판단에 맡기면 건너뛰는 경우가 있어 파이프라인에서 항상 수행한다.
         if rows:
@@ -334,24 +362,53 @@ def _wanted_from(state: PetPalState, args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ────────────────────────────────────────────── ⑦ 출력 가드레일
+def _canonical_animal_card(card, source: dict[str, Any]):
+    """모델이 쓴 카드 필드를 Tool 원문 값으로 덮어써 ID만 맞춘 환각도 제거한다."""
+    return card.model_copy(update={
+        "kind_name": str(source.get("kindNm") or ""),
+        "shelter_name": str(source.get("careNm") or ""),
+        "match_score": float(source.get("match_score", 0.5)),
+        "match_reason": str(source.get("match_reason") or "공공데이터 검색 결과")[:100],
+        "urgency": source.get("urgency") if source.get("urgency") in {"low", "medium", "high"} else None,
+    })
+
+
+def _canonical_place_card(card, source: dict[str, Any]):
+    return card.model_copy(update={
+        "place_name": str(source.get("title") or ""),
+        "acmpy_type": str(source.get("acmpy_type") or "미확인"),
+        "allowed_species": source.get("allowed_species") or None,
+        "caution": (str(source.get("caution"))[:150] if source.get("caution") else None),
+    })
+
+
 @after_agent(state_schema=PetPalState)
 def output_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
-    """모델의 자기 신고를 믿지 않고, Tool 응답 원문과 대조해 grounded 를 시스템이 판정한다."""
+    """카드 전체 필드·유해 출력·PII를 검수하고 grounded 를 시스템이 판정한다."""
     response: AgentResponse | None = state.get("structured_response")
     results = state.get("last_tool_results") or {}
-    known_animals = set((results.get("animals") or {}).keys())
-    known_places = set((results.get("places") or {}).keys())
+    known_animals = results.get("animals") or {}
+    known_places = results.get("places") or {}
 
     if not isinstance(response, AgentResponse):
         messages = state.get("messages") or []
         if messages and isinstance(messages[-1], AIMessage):
             masked = mask_pii(text_of(messages[-1]))
+            label, _ = rule_screen(masked)
+            if label == "abuse_request":
+                masked = block_message(label, masked)
             if masked != messages[-1].content:
                 return {"messages": [messages[-1].model_copy(update={"content": masked})]}
         return None
 
-    animals = [c for c in response.animals if c.desertion_no in known_animals]
-    places = [c for c in response.places if c.content_id in known_places]
+    animals = [
+        _canonical_animal_card(card, known_animals[card.desertion_no])
+        for card in response.animals if card.desertion_no in known_animals
+    ]
+    places = [
+        _canonical_place_card(card, known_places[card.content_id])
+        for card in response.places if card.content_id in known_places
+    ]
     dropped = (len(response.animals) - len(animals)) + (len(response.places) - len(places))
     if dropped:
         log.warning("근거 없는 카드 %d건을 제거했습니다.", dropped)
@@ -362,14 +419,27 @@ def output_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
         for c in places
     ]
     message = mask_pii(response.message)
-    if dropped and not (animals or places):
+    output_label, _ = rule_screen(message)
+    unsafe_output = output_label == "abuse_request"
+    if unsafe_output:
+        log.warning("최종 응답에서 위해·불법 거래 안내를 감지해 안전 문구로 교체했습니다.")
+        message = block_message(output_label, message)
+        animals, places = [], []
+    if dropped and not unsafe_output and not (animals or places):
         message = "확인된 정보가 없습니다. 조건을 바꿔 다시 검색해 볼까요?"
+
+    if response.response_type == "animal_list":
+        has_evidence = "animals" in results
+    elif response.response_type == "travel_list":
+        has_evidence = "places" in results
+    else:
+        has_evidence = False
 
     fixed = response.model_copy(update={
         "animals": animals,
         "places": places,
         "message": message,
-        "grounded": dropped == 0,
+        "grounded": has_evidence and dropped == 0 and not unsafe_output,
     })
     return {"structured_response": fixed}
 

@@ -22,8 +22,9 @@ def test_blocked_by_rule(text, label):
     "서울 마포구 소형견 유기동물 공고 찾아줘",
     "입양 절차가 어떻게 돼?",
 ])
-def test_on_topic_passes_without_model(text):
-    assert rule_screen(text) == ("normal", True)
+def test_on_topic_is_confirmed_by_model(text):
+    """도메인 단어만으로 안전을 확정하지 않고 의미 분류를 거친다."""
+    assert rule_screen(text) == ("normal", False)
 
 
 def test_off_topic_is_blocked_by_rule():

@@ -93,6 +93,15 @@ def test_client_error_is_not_retried():
     assert session.calls == 1
 
 
+def test_rate_limit_is_retried():
+    """429는 영구적인 4xx와 달리 일시적 제한이므로 재시도한다."""
+    session = FakeSession(FakeResponse({}, status=429), FakeResponse(OK_BODY))
+    client = PublicDataClient(SETTINGS, session=session)
+    rows = client.animal_sido()
+    assert session.calls == 2
+    assert rows[0]["desertionNo"] == "A1"
+
+
 def test_auth_error_envelope_is_surfaced():
     """인증키 오류는 별도 봉투로 와서 resultCode 검사에 걸리지 않는다."""
     payload = {"OpenAPI_ServiceResponse": {"cmmMsgHeader": {

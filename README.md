@@ -10,10 +10,10 @@
 
 ## 설치
 
-모든 명령은 이 폴더(`petpal-agent/`) 안에서 실행한다.
+모든 명령은 이 폴더(`langchain-pet-agent/`) 안에서 실행한다.
 
 ```bash
-cd petpal-agent
+cd langchain-pet-agent
 python -m venv venv && source venv/bin/activate   # 상위 폴더의 venv 를 그대로 써도 된다
 pip install -r requirements.txt
 cp .env.example .env      # DATA_GO_KR_SERVICE_KEY, OPENAI_API_KEY 채우기
@@ -37,17 +37,19 @@ python -m petpal.cli "강릉에 반려견 동반 숙소 알려줘"       # 한 �
 python scripts/demo_pipeline.py                        # OpenAI 키 없이 Tool·미들웨어만 확인
 python scripts/probe_temperature.py                    # temperature 지원 여부 1회 확인
 pytest                                                 # 단위 테스트
+pytest -m llm                                          # 분류 모델 실호출
 pytest -m live                                         # 공공 API 실호출 (트래픽 소모)
 ```
 
 ## 폴더 구조
 
 ```
-petpal-agent/
+langchain-pet-agent/
   petpal/      에이전트 패키지
-  tests/       단위 테스트 58개 + 실호출 테스트 3개
+  tests/       기본 테스트 155개 + LLM 테스트 3개 + 실호출 테스트 3개
   scripts/     demo_pipeline.py · probe_temperature.py
   .cache/      지역·품종 코드표 캐시 (자동 생성)
+  .data/       대화 체크포인트·사용자 선호 SQLite (자동 생성)
   .env         인증키 (git 추적 제외)
 ```
 
@@ -110,4 +112,13 @@ petpal-agent/
 
 모델이 `grounded=true` 라고 신고해도 믿지 않는다. `ResultFilterMiddleware` 가 Tool 응답의
 `desertionNo` / `contentid` 를 `State.last_tool_results` 에 기록하고, `OutputGuardrailMiddleware`
-가 최종 카드의 ID 를 그 목록과 대조해 없는 항목을 제거한 뒤 `grounded` 를 다시 계산한다.
+가 최종 카드의 ID 를 그 목록과 대조한다. ID가 존재하더라도 모델이 이름·보호소·점수·동반조건을
+바꾸지 못하도록 카드 전체 필드를 Tool 원문으로 다시 채운 뒤 `grounded` 를 계산한다.
+
+## 가드레일 동작
+
+- 최근 사용자 발화 2개를 함께 검사해, 앞 턴에서 대상을 정하고 다음 턴에서 학대·영리 거래를
+  요청하는 분할 우회를 차단한다.
+- 도메인 키워드가 있다는 이유만으로 정상 확정하지 않고 GPT-5-nano 의미 분류를 거친다.
+- 분류 모델 호출에 실패하면 미확정 요청을 통과시키지 않는 fail-closed 정책을 사용한다.
+- 신고·예방·치료·위험성 문의는 학대 실행 요청과 구분하며, 최종 출력도 한 번 더 검사한다.
