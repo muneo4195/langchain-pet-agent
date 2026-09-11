@@ -100,21 +100,6 @@ ON_TOPIC = [
     "동반", "여행", "숙소", "펜션", "카페", "식당", "산책", "품종", "견종", "분양",
     "동물", "펫", "보호중", "중성화", "예방접종", "수의", "사료", "목줄",
 ]
-
-# 스코프 밖(스포츠 승패 예측/요리 레시피/금융 시세 등) 신호.
-# 온토픽 단어를 섞어도 여기 걸리면 규칙으로 off_topic 확정(모델 호출 없이 차단)한다.
-OFF_TOPIC_PATTERNS = [
-    # 스포츠 승패/우승 예측
-    r"(야구|축구|농구|배구|epl|mlb|kbo).{0,12}(우승|승리|이길|질|승패|예측|배당|스코어)",
-    r"(우승|승리|이길|질|승패|예측|배당|스코어).{0,12}(야구|축구|농구|배구|epl|mlb|kbo)",
-    # 요리/레시피
-    r"(레시피|만드는\s*법|요리).{0,16}(스파게티|파스타|토마토)",
-    r"(스파게티|파스타).{0,16}(레시피|만드는\s*법|요리)",
-    r"(김치찌개|된장찌개|불고기|라면).{0,16}(레시피|끓이는\s*법|만드는\s*법|요리)",
-    # 금융/시세
-    r"(코스피|코스닥|주가|주식|환율|비트코인|코인|시세)",
-]
-
 TRADE_MESSAGE = (
     "입양 동물을 영리 목적으로 판매·전매하는 일은 입양계약 위반이자 동물보호법 위반 소지가 있어 "
     "도와드릴 수 없습니다.\n"
@@ -145,7 +130,11 @@ EMAIL_RE = re.compile(
 
 
 def rule_screen(text: str) -> tuple[str, bool]:
-    """(라벨, 확정 여부). 확정이 False 면 모델 판별기로 넘긴다."""
+    """(라벨, 확정 여부). 확정이 False 면 모델 판별기로 넘긴다.
+
+    확정이 False 일 때의 라벨은 최종 판정이 아니라 분류기 호출이 실패했을 때 적용할
+    안전 기본값이다(fail-closed).
+    """
     lowered = normalize_for_screening(text)
     # 조사 사이를 벌리는 우회("때 려도")도 검사하되, 원문 경계가 필요한 패턴은 lowered 로 본다.
     compact = re.sub(r"[\s._·,!?/\\-]+", "", lowered)
@@ -162,9 +151,6 @@ def rule_screen(text: str) -> tuple[str, bool]:
     for pat in INJECTION_PATTERNS:
         if re.search(pat, lowered):
             return "injection", True
-    for pat in OFF_TOPIC_PATTERNS:
-        if re.search(pat, lowered):
-            return "off_topic", True
     if any(re.search(pat, lowered) for pat in ROLE_HINTS):
         # 모델이 최종 판단하되, 호출이 실패하면 injection 으로 막는다(fail-closed).
         return "injection", False
@@ -175,6 +161,10 @@ def rule_screen(text: str) -> tuple[str, bool]:
         # 도메인 단어만으로 안전을 확정하면 새로운 위해 표현이 그대로 통과한다.
         # 정상 후보로 표시하되 반드시 의미 분류기를 거친다.
         return "normal", False
+    # 스코프 밖 주제는 규칙으로 열거하지 않는다. 요리·스포츠·금융처럼 고유명사가 끝없이
+    # 늘어나는 영역은 사람이 목록을 영영 따라다녀야 하고, "보호소 입양비 시세" 같은 온토픽
+    # 발화까지 규칙이 삼킨다. 얻는 것은 모델 호출 한 번의 지연뿐이라 분류기에 맡긴다.
+    # 차단 정책 자체는 그대로다 — 분류기가 off_topic 을 내고, 호출이 실패해도 fail-closed 다.
     return "off_topic", False  # 애매하므로 모델에게 확인시킨다
 
 
