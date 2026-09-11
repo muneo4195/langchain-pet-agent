@@ -17,7 +17,21 @@ SIZE_ALIASES = {
     "소형": "소형견", "소형견": "소형견", "작은": "소형견",
     "중형": "중형견", "중형견": "중형견",
     "대형": "대형견", "대형견": "대형견", "큰": "대형견",
+    # 발화에서 자주 쓰이는 우회 표현. 정확 일치가 아니라 부분일치라
+    # "작은 규모"처럼 문맥이 다른 경우까지 넓게 잡을 수 있어 규칙만으로는 한계가 있다
+    # (애매하면 middleware._extract_conditions_llm 이 보조로 개입한다).
+    "조그마": "소형견", "조그맣": "소형견", "초소형": "소형견", "미니": "소형견",
+    "핸드백": "소형견", "품에": "소형견", "손바닥": "소형견", "아담": "소형견",
+    "덩치": "대형견", "우람": "대형견", "골격이 좋": "대형견", "왕치": "대형견",
+    "덩치가 큰": "대형견",
 }
+# normalize_size 가 None 을 반환했을 때, 애초에 크기 얘기를 한 건지(=규칙 실패) vs
+# 크기 얘기 자체가 없는 건지(=조건 없음)를 구분하기 위한 신호어.
+SIZE_SIGNAL_WORDS = (
+    "사이즈", "크기", "몸집", "체구", "덩치", "체형",
+    # "한 손에 쏙" 같은 우회 표현은 alias 사전이 못 잡을 수 있어 신호어로만 감지한다.
+    "한 손", "손에", "가방", "들어갈", "쏙",
+) + tuple(SIZE_ALIASES.keys())
 
 
 def parse_number(raw: object) -> float | None:
@@ -61,6 +75,13 @@ def normalize_size(text: str | None) -> str | None:
         if alias in text:
             return canonical
     return None
+
+
+def has_size_signal(text: str | None) -> bool:
+    """크기 관련 표현이 있었는지(=규칙이 놓쳤어도 후속 처리가 필요한지) 판별."""
+    if not text:
+        return False
+    return any(word in text for word in SIZE_SIGNAL_WORDS)
 
 
 def is_closed_notice(process_state: object) -> bool:
@@ -128,6 +149,9 @@ def match_score(item: dict, wanted: dict) -> tuple[float, str]:
     if wanted.get("max_age") is not None:
         got = age_years(item.get("age"))
         checks.append((got is not None and got <= wanted["max_age"], f"{wanted['max_age']}살 이하"))
+    if wanted.get("min_age") is not None:
+        got = age_years(item.get("age"))
+        checks.append((got is not None and got >= wanted["min_age"], f"{wanted['min_age']}살 이상"))
     if wanted.get("gentle"):
         checks.append((_has_any(_GENTLE, special), "순한(특이사항)"))
     if wanted.get("low_activity"):

@@ -26,9 +26,10 @@ from langchain.messages import AIMessage, HumanMessage
 
 from .config import Settings, build_model
 from .guardrails import block_message, mask_pii, rule_screen
-from .prompts import guardrail_prompt, intent_prompt
+from .prompts import condition_prompt, guardrail_prompt, intent_prompt
 from .parsing import (
     age_years,
+    has_size_signal,
     is_closed_notice,
     is_inactive_place,
     match_score,
@@ -37,7 +38,13 @@ from .parsing import (
     size_of,
     urgency_of,
 )
-from .schemas import AgentResponse, GuardrailClassification, INTENT_TO_RESPONSE, IntentClassification
+from .schemas import (
+    AgentResponse,
+    ConditionExtraction,
+    GuardrailClassification,
+    INTENT_TO_RESPONSE,
+    IntentClassification,
+)
 from .services import get_services
 from .state import PetPalState
 
@@ -46,7 +53,17 @@ log = logging.getLogger("petpal.middleware")
 REGION_TOOLS = {"search_rescued_animals", "search_pet_friendly_travel"}
 LIST_TOOLS = {"search_rescued_animals", "search_pet_friendly_travel", "get_pet_travel_detail"}
 MAX_CARDS = 5
-_AGE_RE = re.compile(r"(\d+)\s*(?:살|세)")
+_AGE_RE = re.compile(r"(\d+)\s*(?:살|세|년)")
+# 숫자 + 이 단어들 → 그 나이 이하만 원한다는 뜻
+_MAX_AGE_WORDS = ("이하", "미만", "어린")
+# 숫자 + 이 단어들 → 그 나이 이상/초과를 가리킨다(방향은 배제 여부로 다시 나뉜다)
+_OLDER_WORDS = ("이상", "넘은", "넘는", "많은")
+_EXCLUDE_WORDS = ("말고", "빼", "제외", "말아")
+_YOUNG_WORDS = ("새끼", "아기", "아깽이")
+# 숫자가 없는 애매한 표현까지 포함한, "나이 얘기를 하긴 했다"는 신호어
+_AGE_SIGNAL_WORDS = ("살", "세", "나이", "어린", "성견", "나이든", "늙") + _OLDER_WORDS + _YOUNG_WORDS
+CONDITION_CONFIDENCE_THRESHOLD = 0.6
+_LOW_CONFIDENCE_NOTE = "말씀하신 크기·나이 조건을 정확히 이해하지 못했어요. 다시 한 번 말씀해 주시겠어요?"
 
 _classifier = None
 
@@ -57,6 +74,46 @@ def classifier():
         s = Settings.load()
         _classifier = build_model(s.classifier_model, s.classifier_temperature)
     return _classifier
+
+
+def _rule_age_conditions(text: str) -> dict[str, int]:
+    """정규식으로 처리 가능한 흔한 나이 패턴만 뽑는다. 실패하면 조용히 빈 dict."""
+    current: dict[str, int] = {}
+    if m := _AGE_RE.search(text):
+        n = int(m.group(1))
+        if any(w in text for w in _MAX_AGE_WORDS):
+            current["max_age"] = n
+        elif any(w in text for w in _OLDER_WORDS) and any(w in text for w in _EXCLUDE_WORDS):
+            # "3살 이상은 빼줘"(그 나이부터 제외) / "3살 넘은 애는 말고"(그 나이 넘으면 제외)
+            current["max_age"] = n - 1 if "이상" in text else n
+        elif any(w in text for w in _OLDER_WORDS):
+            current["min_age"] = n  # "3살 이상만" 처럼 그 나이부터 원하는 경우
+    elif any(w in text for w in _YOUNG_WORDS):
+        # 숫자 없이 "새끼"/"아기"만 있는 경우. "말고"가 붙으면 반대로 어린 개체를 배제하는 뜻이다.
+        if any(w in text for w in _EXCLUDE_WORDS):
+            current["min_age"] = 1
+        else:
+            current["max_age"] = 1
+    return current
+
+
+def _age_signal(text: str) -> bool:
+    """규칙이 값을 못 뽑았어도 나이 얘기를 한 건 맞는지 판별한다(조용히 무시하지 않기 위해)."""
+    return any(word in text for word in _AGE_SIGNAL_WORDS)
+
+
+def _extract_conditions_llm(text: str) -> ConditionExtraction | None:
+    """규칙 파서가 실패했는데 신호어는 있을 때만 호출되는 보조 추출기.
+
+    "핸드백에 들어갈 정도로 조그마한 애", "2년 넘은 애는 말고" 같은 우회 표현을
+    규칙이 놓치더라도, 조용히 조건 없음으로 처리하지 않고 여기서 한 번 더 시도한다.
+    실패하면 로그만 남기고 None(호출부가 확인 질문으로 전환)을 돌려준다.
+    """
+    try:
+        return classifier().with_structured_output(ConditionExtraction).invoke(condition_prompt(text))
+    except Exception as exc:
+        log.warning("조건 추출(LLM 보조) 실패: %s", exc)
+        return None
 
 
 def text_of(msg: Any) -> str:
@@ -143,11 +200,39 @@ def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
             },
         }
 
+    # 크기/나이 규칙 파서가 실패했는데도 관련 신호어가 있으면, 조용히 "조건 없음"으로
+    # 넘어가지 말고 LLM 보조 추출을 한 번 더 시도한다(설계 원칙: 애매하면 확인하거나 물어본다).
+    extracted_conditions: dict[str, Any] = {}
+    condition_note: str | None = None
+    if intent in {"adoption_search", "travel_search"}:
+        size_unresolved = normalize_size(text) is None and has_size_signal(text)
+        rule_age = _rule_age_conditions(text)
+        age_unresolved = not rule_age and _age_signal(text)
+        if size_unresolved or age_unresolved:
+            verdict = _extract_conditions_llm(text)
+            if verdict is None:
+                condition_note = _LOW_CONFIDENCE_NOTE
+            else:
+                got_something = verdict.size or verdict.min_age is not None or verdict.max_age is not None
+                if verdict.confidence >= CONDITION_CONFIDENCE_THRESHOLD and got_something:
+                    if verdict.size:
+                        extracted_conditions["size"] = verdict.size
+                    if verdict.min_age is not None:
+                        extracted_conditions["min_age"] = verdict.min_age
+                    if verdict.max_age is not None:
+                        extracted_conditions["max_age"] = verdict.max_age
+                    condition_note = verdict.note
+                elif got_something:
+                    condition_note = verdict.note or _LOW_CONFIDENCE_NOTE
+
     return {
         "intent": intent,
         "guardrail": {"label": "normal", "confidence": confidence, "blocked": False},
         # 매 턴 새 응답을 생성하므로 이전 턴의 구조화 응답을 먼저 비운다.
         "structured_response": None,
+        # 다음 턴으로 잘못 이어지지 않도록 검색 의도가 아닐 때도 항상 비워서 덮어쓴다.
+        "extracted_conditions": extracted_conditions,
+        "condition_note": condition_note,
     }
 
 
@@ -292,6 +377,10 @@ def result_filter(request, handler):
                 got = age_years(row.get("age"))
                 if got is None or got > wanted["max_age"]:
                     continue
+            if wanted.get("min_age") is not None:
+                got = age_years(row.get("age"))
+                if got is None or got < wanted["min_age"]:
+                    continue
             score, reason = match_score(row, wanted)
             row["match_score"], row["match_reason"] = score, reason
             row["urgency"] = urgency_of(row.get("noticeEdt"))
@@ -369,11 +458,14 @@ def _wanted_from(state: PetPalState, args: dict[str, Any]) -> dict[str, Any]:
         current["low_activity"] = True
     if "아파트" in text or "실내" in text:
         current["apartment"] = True
-    if m := _AGE_RE.search(text):
-        if "이하" in text or "미만" in text or "어린" in text:
-            current["max_age"] = int(m.group(1))
+    current.update(_rule_age_conditions(text))
     if args.get("kind_name"):
         current["kind_name"] = args["kind_name"]
+
+    # 규칙이 놓친 크기/나이는 input_guardrail 이 이번 턴에 LLM 보조로 뽑아 state 에
+    # 남겨둔 값으로 채운다(result_filter 자체는 LLM을 호출하지 않는 순수 로직으로 유지).
+    llm_conditions = state.get("extracted_conditions") or {}
+    current = {**current, **llm_conditions}
 
     previous = dict(state.get("last_search_filters") or {})
     merged = {**previous, **current}
@@ -448,6 +540,12 @@ def output_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
         animals, places = [], []
     if dropped and not unsafe_output and not (animals or places):
         message = "확인된 정보가 없습니다. 조건을 바꿔 다시 검색해 볼까요?"
+
+    # 크기/나이 조건이 규칙으로 못 잡혔거나 LLM이 낮은 확신으로 짐작한 경우,
+    # 조용히 무시하지 않고 사용자에게 확인을 요청한다(가시화).
+    condition_note = (state.get("condition_note") or "").strip()
+    if condition_note and not unsafe_output:
+        message = f"{message}\n\n(확인) {condition_note}"
 
     intent = (state.get("intent") or "").strip()
     desired_type = INTENT_TO_RESPONSE.get(intent, "general_chat")
