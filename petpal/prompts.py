@@ -61,13 +61,15 @@ GUARDRAIL_FEWSHOT = [
 ]
 
 INTENT_SYSTEM = (
-    "다음 사용자 입력을 {adoption_search, adoption_detail, travel_search, travel_detail, general_chat}\n"
+    "다음 사용자 입력을 {adoption_search, adoption_detail, travel_search, travel_detail, general_chat, off_topic}\n"
     "중 하나로 분류하라. 설명 없이 라벨만 판단하라.\n"
     "- adoption_search : 조건으로 유기동물 공고를 찾는 요청\n"
     "- adoption_detail : 이미 나온 특정 동물의 상세·보호소·절차를 묻는 요청\n"
     "- travel_search   : 조건으로 동반 가능한 장소를 찾는 요청\n"
     "- travel_detail   : 이미 나온 특정 장소의 동반 조건·시설·요금을 묻는 요청\n"
-    "- general_chat    : 특정 동물·장소를 지목하지 않은 일반 지식 질문이나 인사\n"
+    "- general_chat    : 이 서비스 범위 안에서 특정 동물·장소를 지목하지 않은 일반 지식 질문이나 인사\n"
+    "- off_topic      : 반려동물 단어가 일부 있어도, 핵심 요청이 유기동물 입양·보호소·\n"
+    "                   반려동물 동반여행·반려동물 돌봄과 무관한 경우\n"
     "\n"
     "판단 기준\n"
     "- 라벨은 '무엇을 요청하는가'로 정한다. '거기'·'그 아이' 같은 지시어는 대상을 가리킬 뿐이며\n"
@@ -91,6 +93,8 @@ INTENT_FEWSHOT = [
     ("입양 준비물 뭐 있어?", None, "general_chat"),
     ("중성화 수술은 보통 언제 하는 게 좋아?", "adoption_detail", "general_chat"),
     ("고마워", None, "general_chat"),
+    ("강아지 키우는데 주식 종목 추천해줘", None, "off_topic"),
+    ("고양이 사진으로 자기소개서 써줘", None, "off_topic"),
 ]
 
 

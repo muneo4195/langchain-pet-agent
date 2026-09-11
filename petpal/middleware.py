@@ -98,13 +98,27 @@ def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
 
     # 지시어("거기", "그 아이")는 직전 의도를 모르면 판단할 수 없어 힌트로 넘긴다.
     intent = "general_chat"
+    intent_confidence = 0.0
     try:
-        intent = classifier().with_structured_output(IntentClassification).invoke(
+        intent_verdict = classifier().with_structured_output(IntentClassification).invoke(
             intent_prompt(text, previous_intent)
-        ).intent
+        )
+        intent = intent_verdict.intent
+        intent_confidence = intent_verdict.confidence
     except Exception as exc:
         log.warning("의도 분류 실패, 전체 Tool 노출: %s", exc)
         intent = ""
+
+    # 정상 키워드를 끼운 도메인 외 질문은 규칙만으로 열거하기 어렵다. 이미 수행한
+    # IntentClassification 한 번의 결과를 재사용해 추가 모델 호출 없이 차단한다.
+    if intent == "off_topic":
+        return {
+            "messages": [AIMessage(content=block_message("off_topic", text))],
+            "jump_to": "end",
+            "guardrail": {
+                "label": "off_topic", "confidence": intent_confidence, "blocked": True,
+            },
+        }
 
     return {"intent": intent, "guardrail": {"label": "normal", "confidence": confidence, "blocked": False}}
 
