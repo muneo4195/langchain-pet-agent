@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field
 GuardrailLabel = Literal["off_topic", "injection", "abuse_request", "normal"]
 Intent = Literal[
     "adoption_search", "adoption_detail", "travel_search", "travel_detail", "general_chat",
-    "off_topic",
 ]
 ResponseType = Literal["animal_list", "travel_list", "general_chat"]
 
