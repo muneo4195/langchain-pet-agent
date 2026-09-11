@@ -105,7 +105,6 @@ def test_region_is_left_alone_when_given():
     region_code_resolver.wrap_tool_call(make_request("search_rescued_animals", {"region": "강릉"}), handler)
     assert captured["region"] == "강릉"
 
-
 def test_mixed_off_topic_is_blocked_by_existing_intent_call(monkeypatch):
     """도메인 단어가 섞여도 intent 분류 1회로 차단하며 Guardrail LLM을 추가 호출하지 않는다."""
     from petpal import middleware as mw
@@ -125,11 +124,22 @@ def test_mixed_off_topic_is_blocked_by_existing_intent_call(monkeypatch):
     assert update["guardrail"] == {"label": "off_topic", "confidence": 0.98, "blocked": True}
 
 
-def test_code_tables_map_both_apis():
+def test_code_tables_map_both_apis(monkeypatch):
     """지역명 → 두 API 의 서로 다른 코드 체계로 변환된다(자릿수가 다름)."""
-    from petpal.tools import _resolved_region
+    from types import SimpleNamespace
 
-    r = _resolved_region("강원도 강릉시")
+    from petpal import tools
+    from petpal.codes import CodeTables
+
+    tables = CodeTables(
+        animal_sido={"강원": "6530000"},
+        animal_sigungu={"6530000": {"강릉": "4201000"}},
+        travel_regn={"강원": "51"},
+        travel_signgu={"51": {"강릉": "150"}},
+    )
+    monkeypatch.setattr(tools, "get_services", lambda: SimpleNamespace(codes=tables))
+
+    r = tools._resolved_region("강원도 강릉시")
     assert len(r["upr_cd"]) == 7
     assert len(r["l_dong_regn_cd"]) == 2 and len(r["l_dong_signgu_cd"]) == 3
 
@@ -219,6 +229,24 @@ def test_travel_search_auto_enriches_details(monkeypatch):
     assert calls == [["C1", "C2"]], "상세 조회가 자동으로 일어나야 한다"
     assert rows[0]["acmpy_type"] == "전구역 동반가능" and rows[0]["allowed_species"] == "전 견종"
     assert rows[1]["acmpy_type"] == "미확인" and rows[1]["allowed_species"] is None
+
+
+def test_inactive_travel_place_is_removed(monkeypatch):
+    """운영 상태 필드가 포함된 경우 폐업 장소를 사용자에게 노출하지 않는다."""
+    from petpal import tools
+
+    monkeypatch.setattr(tools, "fetch_pet_details", lambda ids, limit=None: {str(i): {} for i in ids})
+    payload = {
+        "items": [
+            {"contentid": "C1", "title": "운영 장소", "businessStatus": "정상영업"},
+            {"contentid": "C2", "title": "폐업 장소", "businessStatus": "폐업"},
+        ],
+        "total": 2,
+    }
+    command = result_filter.wrap_tool_call(
+        make_request("search_pet_friendly_travel", {"region": "강릉"}), responder(payload))
+    rows = json.loads(command.update["messages"][0].content)["items"]
+    assert [row["contentid"] for row in rows] == ["C1"]
 
 
 def test_zero_result_hint_suggests_widening_days():
