@@ -24,7 +24,7 @@ ABUSE_PATTERNS = [
     r"안락사.{0,10}(시키|하는|방법)",
     # 입양 동물의 영리 목적 판매·전매 — 입양계약 위반이자 동물보호법 위반 소지.
     # '분양' 자체는 정상 단어이므로 판매·수익 신호가 함께 있을 때만 잡는다.
-    r"재판매", r"되팔", r"전매", r"위탁\s*판매",
+    r"재\s*판매", r"되\s*팔", r"되팔이", r"전매", r"리셀", r"re[-\s]?sell", r"위탁\s*판매",
     r"(상업|영리|수익|장사|영업)적?\s*(판매|거래|분양|양도)",
     r"(판매|팔|거래|양도|넘기).{0,10}(수익|이익|돈벌|장사)",
     r"(입양|구조|유기).{0,16}(팔|판매)",
@@ -65,6 +65,19 @@ ON_TOPIC = [
     "동물", "펫", "보호중", "중성화", "예방접종", "수의", "사료", "목줄",
 ]
 
+# 스코프 밖(스포츠 승패 예측/요리 레시피/금융 시세 등) 신호.
+# 온토픽 단어를 섞어도 여기 걸리면 규칙으로 off_topic 확정(모델 호출 없이 차단)한다.
+OFF_TOPIC_PATTERNS = [
+    # 스포츠 승패/우승 예측
+    r"(야구|축구|농구|배구|epl|mlb|kbo).{0,12}(우승|승리|이길|질|승패|예측|배당|스코어)",
+    r"(우승|승리|이길|질|승패|예측|배당|스코어).{0,12}(야구|축구|농구|배구|epl|mlb|kbo)",
+    # 요리/레시피
+    r"(레시피|만드는\s*법|요리).{0,16}(스파게티|파스타|토마토)",
+    r"(스파게티|파스타).{0,16}(레시피|만드는\s*법|요리)",
+    # 금융/시세
+    r"(코스피|코스닥|주가|주식|환율|비트코인|코인|시세)",
+]
+
 TRADE_MESSAGE = (
     "입양 동물을 영리 목적으로 판매·전매하는 일은 입양계약 위반이자 동물보호법 위반 소지가 있어 "
     "도와드릴 수 없습니다.\n"
@@ -97,6 +110,9 @@ def rule_screen(text: str) -> tuple[str, bool]:
     for pat in INJECTION_PATTERNS:
         if re.search(pat, lowered):
             return "injection", True
+    for pat in OFF_TOPIC_PATTERNS:
+        if re.search(pat, lowered):
+            return "off_topic", True
     if any(re.search(pat, lowered) for pat in ROLE_HINTS):
         # 모델이 최종 판단하되, 호출이 실패하면 injection 으로 막는다(fail-closed).
         return "injection", False
@@ -105,7 +121,8 @@ def rule_screen(text: str) -> tuple[str, bool]:
         return "abuse_request", False
     if any(word in text for word in ON_TOPIC):
         return "normal", True
-    return "off_topic", False  # 애매하므로 모델에게 확인시킨다
+    # 도메인 한정 프로젝트이므로 오프토픽은 규칙으로 확정 차단한다.
+    return "off_topic", True
 
 
 def block_message(label: str, text: str = "") -> str:
