@@ -79,6 +79,6 @@ def probe(model_name: str, temperature: float = 0.3) -> str:
 
 
 if __name__ == "__main__":
-    models = sys.argv[1:] or ["gpt-5-mini", "gpt-5-nano"]
+    models = sys.argv[1:] or ["gpt-5-mini"]
     for name in models:
         print(f"{name:14} {probe(name)}")

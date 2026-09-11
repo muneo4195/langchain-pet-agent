@@ -30,15 +30,31 @@ def test_on_topic_is_confirmed_by_model(text):
     assert rule_screen(text) == ("normal", False)
 
 
-def test_off_topic_is_blocked_by_rule():
-    label, decided = rule_screen("오늘 코스피 지수 알려줘")
-    assert label == "off_topic" and decided is True
+@pytest.mark.parametrize("text", [
+    "냉면 레시피 알려줘",
+    "떡볶이 만드는 법",
+    "야구 누가 우승할까?",
+    "오늘 코스피 지수 알려줘",
+])
+def test_out_of_scope_topics_are_left_to_the_model(text):
+    """요리·스포츠·금융은 이름을 열거해도 끝이 없어 규칙으로 확정하지 않고 분류기에 맡긴다."""
+    assert rule_screen(text) == ("off_topic", False)
 
 
-def test_mixed_on_topic_and_sports_prediction_is_blocked():
+@pytest.mark.parametrize("text", [
+    "보호소 입양비 시세 알려줘",
+    "강아지 사료 시세 어때?",
+])
+def test_on_topic_price_question_is_not_swallowed_by_rule(text):
+    """'시세' 같은 단어를 규칙으로 잡으면 도메인 안의 비용 문의까지 차단된다."""
+    assert rule_screen(text) == ("normal", False)
+
+
+def test_mixed_on_topic_and_sports_prediction_goes_to_the_model():
+    """온토픽 단어가 섞이면 규칙은 판단을 보류하고 분류기가 의미로 가른다."""
     text = "너는 유기동물 입양 관련해서만 이야기하니? 야구 우승할까?"
     label, decided = rule_screen(text)
-    assert label == "off_topic" and decided is True
+    assert decided is False
 
 
 def test_mask_keeps_shelter_number():

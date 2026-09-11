@@ -30,14 +30,13 @@ from .prompts import guardrail_prompt, intent_prompt
 from .parsing import (
     age_years,
     is_closed_notice,
-    is_inactive_place,
     match_score,
     normalize_size,
     parse_weight_kg,
     size_of,
     urgency_of,
 )
-from .schemas import AgentResponse, GuardrailClassification, IntentClassification
+from .schemas import AgentResponse, GuardrailClassification, INTENT_TO_RESPONSE, IntentClassification
 from .services import get_services
 from .state import PetPalState
 
@@ -84,7 +83,7 @@ def _recent_humans(messages: list[Any], limit: int = 2) -> list[str]:
 # ────────────────────────────────────────────── ① 입력 가드레일 + 의도 분류
 @before_agent(state_schema=PetPalState, can_jump_to=["end"])
 def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
-    """규칙 필터 1차 → GPT-5-nano 2차. 위반이면 Agent 호출 자체를 중단한다."""
+    """규칙 필터 1차 → GPT-5-mini 2차. 위반이면 Agent 호출 자체를 중단한다."""
     recent = _recent_humans(state["messages"])
     text = recent[-1] if recent else ""
     if not text:
@@ -246,7 +245,10 @@ def tool_cache(request, handler):
 # ────────────────────────────────────────────── ⑥ 결과 1차 필터링
 @wrap_tool_call(state_schema=PetPalState)
 def result_filter(request, handler):
-    """종결 공고·폐업 시설·조건 미달 항목을 Tool 응답에서 제거하고 근거를 State 에 기록한다."""
+    """종결 공고·조건 미달 항목을 Tool 응답에서 제거하고 근거를 State 에 기록한다.
+
+    동반여행지는 TourAPI 응답에 운영상태(폐업·휴업) 필드가 없어 여기서 걸러낼 수 없다.
+    """
     from langgraph.types import Command
 
     result = handler(request)
@@ -278,6 +280,10 @@ def result_filter(request, handler):
                 got = age_years(row.get("age"))
                 if got is None or got > wanted["max_age"]:
                     continue
+            if wanted.get("min_age") is not None:
+                got = age_years(row.get("age"))
+                if got is None or got < wanted["min_age"]:
+                    continue
             score, reason = match_score(row, wanted)
             row["match_score"], row["match_reason"] = score, reason
             row["urgency"] = urgency_of(row.get("noticeEdt"))
@@ -295,7 +301,7 @@ def result_filter(request, handler):
         update["last_search_filters"] = wanted
 
     elif name == "search_pet_friendly_travel":
-        rows = [row for row in payload.get("items", []) if not is_inactive_place(row)][:MAX_CARDS]
+        rows = payload.get("items", [])[:MAX_CARDS]
         # 2.2 흐름 6단계 — 동반 조건은 목록 API 에 없으므로 여기서 상세를 붙인다.
         # 모델의 판단에 맡기면 건너뛰는 경우가 있어 파이프라인에서 항상 수행한다.
         if rows:
@@ -347,7 +353,11 @@ def _wanted_from(state: PetPalState, args: dict[str, Any]) -> dict[str, Any]:
     text = _last_human(state.get("messages") or [])
     # 지역은 API 파라미터(upr_cd/org_cd)로 이미 걸러졌으므로 적합도 항목에 넣지 않는다.
     current: dict[str, Any] = {}
-    if size := normalize_size(text):
+
+    # size/min_age/max_age 는 kind_name 과 같은 방식으로 Tool 인자에서 우선 읽는다.
+    # 모델이 자연어(은유적 표현 포함)를 직접 구조화해 넘기므로 정규식보다 더 넓게 잡을 수 있다.
+    # 모델이 값을 채우지 않은 경우에만 마지막 발화를 정규식으로 다시 훑는다(하위 호환 폴백).
+    if size := (normalize_size(args.get("size")) or normalize_size(text)):
         current["size"] = size
     if "순한" in text or "온순" in text or "얌전" in text:
         current["gentle"] = True
@@ -355,9 +365,15 @@ def _wanted_from(state: PetPalState, args: dict[str, Any]) -> dict[str, Any]:
         current["low_activity"] = True
     if "아파트" in text or "실내" in text:
         current["apartment"] = True
-    if m := _AGE_RE.search(text):
+    if "중성화" in text and not any(x in text for x in ("상관없", "안 해도", "안해도", "필요없")):
+        current["neutered"] = True
+    if args.get("max_age") is not None:
+        current["max_age"] = int(args["max_age"])
+    elif m := _AGE_RE.search(text):
         if "이하" in text or "미만" in text or "어린" in text:
             current["max_age"] = int(m.group(1))
+    if args.get("min_age") is not None:
+        current["min_age"] = int(args["min_age"])
     if args.get("kind_name"):
         current["kind_name"] = args["kind_name"]
 
@@ -435,14 +451,19 @@ def output_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
     if dropped and not unsafe_output and not (animals or places):
         message = "확인된 정보가 없습니다. 조건을 바꿔 다시 검색해 볼까요?"
 
-    if response.response_type == "animal_list":
+    intent = (state.get("intent") or "").strip()
+    desired_type = INTENT_TO_RESPONSE.get(intent, "general_chat")
+    inferred_type = "animal_list" if animals else "travel_list" if places else desired_type
+
+    if inferred_type == "animal_list":
         has_evidence = "animals" in results
-    elif response.response_type == "travel_list":
+    elif inferred_type == "travel_list":
         has_evidence = "places" in results
     else:
         has_evidence = False
 
     fixed = response.model_copy(update={
+        "response_type": inferred_type,
         "animals": animals,
         "places": places,
         "message": message,
