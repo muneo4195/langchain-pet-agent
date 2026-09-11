@@ -47,7 +47,7 @@ class Settings:
 
     service_key: str
     orchestrator_model: str = "gpt-5-mini"
-    classifier_model: str = "gpt-5-nano"
+    classifier_model: str = "gpt-5-mini"
     orchestrator_temperature: float = 0.3
     classifier_temperature: float = 0.0
     http_timeout: float = 8.0

@@ -84,7 +84,7 @@ def _recent_humans(messages: list[Any], limit: int = 2) -> list[str]:
 # ────────────────────────────────────────────── ① 입력 가드레일 + 의도 분류
 @before_agent(state_schema=PetPalState, can_jump_to=["end"])
 def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
-    """규칙 필터 1차 → GPT-5-nano 2차. 위반이면 Agent 호출 자체를 중단한다."""
+    """규칙 필터 1차 → GPT-5-mini 2차. 위반이면 Agent 호출 자체를 중단한다."""
     recent = _recent_humans(state["messages"])
     text = recent[-1] if recent else ""
     if not text:
