@@ -1,3 +1,4 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system"
+    "python.defaultInterpreterPath": "/Users/parksungwoo/Downloads/5. 생성형 AI 서비스 개발/.venv/bin/python",
+    "python.terminal.activateEnvironment": true
 }

@@ -67,6 +67,43 @@ def test_pii_masked_inside_cards():
     place = PetTravelCard(content_id="C1", place_name="가", caution="예약 010-3333-4444")
     response = AgentResponse(response_type="animal_list", message="안내",
                              animals=[animal], places=[place])
-    fixed = run(response, {"animals": {"A1": {}}, "places": {"C1": {}}})["structured_response"]
+    source = {
+        "animals": {"A1": {"match_reason": "담당자 010-1111-2222 문의"}},
+        "places": {"C1": {"title": "가", "caution": "예약 010-3333-4444"}},
+    }
+    fixed = run(response, source)["structured_response"]
     assert "010-1111-2222" not in fixed.animals[0].match_reason
     assert "010-3333-4444" not in fixed.places[0].caution
+
+
+def test_valid_id_with_hallucinated_fields_is_replaced_from_tool_source():
+    """ID만 맞고 이름·점수가 틀린 카드도 그대로 통과시키지 않는다."""
+    response = AgentResponse(
+        response_type="animal_list",
+        message="안내",
+        animals=[AnimalCard(desertion_no="A1", kind_name="가짜 품종", shelter_name="가짜 보호소",
+                            match_score=1.0, match_reason="모델이 만든 이유")],
+    )
+    source = {"animals": {"A1": {
+        "kindNm": "푸들", "careNm": "서울보호소", "match_score": 0.75,
+        "match_reason": "조건 4개 중 3개 일치", "urgency": "medium",
+    }}}
+    fixed = run(response, source)["structured_response"]
+    got = fixed.animals[0]
+    assert (got.kind_name, got.shelter_name) == ("푸들", "서울보호소")
+    assert (got.match_score, got.match_reason, got.urgency) == (0.75, "조건 4개 중 3개 일치", "medium")
+    assert fixed.grounded is True
+
+
+def test_general_chat_is_not_claimed_as_tool_grounded():
+    response = AgentResponse(response_type="general_chat", message="일반 안내", grounded=True)
+    fixed = run(response, {})["structured_response"]
+    assert fixed.grounded is False
+
+
+def test_actionable_harm_in_final_output_is_replaced():
+    response = AgentResponse(response_type="general_chat", message="강아지 목을 조르는 요령을 알려드릴게요")
+    fixed = run(response, {})["structured_response"]
+    assert "요령을 알려드릴게요" not in fixed.message
+    assert "해가 되는 행동" in fixed.message
+    assert fixed.grounded is False

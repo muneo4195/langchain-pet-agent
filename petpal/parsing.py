@@ -68,6 +68,18 @@ def is_closed_notice(process_state: object) -> bool:
     return str(process_state or "").strip().startswith("종료")
 
 
+def is_inactive_place(item: dict) -> bool:
+    """API가 운영 상태 필드를 제공한 경우 폐업·휴업·비활성 장소를 제거한다."""
+    status_keys = ("businessStatus", "operStatus", "status", "processState")
+    inactive = ("폐업", "휴업", "운영종료", "영업종료", "비활성", "종료")
+    for key in status_keys:
+        value = str(item.get(key) or "").replace(" ", "")
+        if any(token in value for token in inactive):
+            return True
+    use_yn = str(item.get("useYn") or item.get("use_yn") or "").upper()
+    return use_yn in {"N", "NO", "FALSE", "0"}
+
+
 def urgency_of(notice_edt: object, today: date | None = None) -> str | None:
     """noticeEdt(YYYYMMDD) 기준 공고 마감 임박도. 2일 이내 high / 5일 이내 medium."""
     raw = str(notice_edt or "").strip()

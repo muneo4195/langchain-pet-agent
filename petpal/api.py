@@ -70,7 +70,8 @@ class PublicDataClient:
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else 0
                 last = exc
-                if status < 500 or attempt == self.s.max_retries:
+                retryable = status in {408, 429} or status >= 500
+                if not retryable or attempt == self.s.max_retries:
                     break
                 time.sleep(self.s.backoff_factor ** (attempt - 1))
 
