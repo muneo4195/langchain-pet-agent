@@ -176,53 +176,14 @@ def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
 
     # 지시어("거기", "그 아이")는 직전 의도를 모르면 판단할 수 없어 힌트로 넘긴다.
     intent = "general_chat"
-    intent_confidence = 0.0
     try:
         intent_verdict = classifier().with_structured_output(IntentClassification).invoke(
             intent_prompt(text, previous_intent)
         )
         intent = intent_verdict.intent
-        intent_confidence = intent_verdict.confidence
     except Exception as exc:
         log.warning("의도 분류 실패, 전체 Tool 노출: %s", exc)
         intent = ""
-
-    # 정상 키워드를 끼운 도메인 외 질문은 규칙만으로 열거하기 어렵다. 이미 수행한
-    # IntentClassification 한 번의 결과를 재사용해 추가 모델 호출 없이 차단한다.
-    if intent == "off_topic":
-        return {
-            "messages": [AIMessage(content=block_message("off_topic", text))],
-            "structured_response": None,
-            "jump_to": "end",
-            "guardrail": {
-                "label": "off_topic", "confidence": intent_confidence, "blocked": True,
-            },
-        }
-
-    # 크기/나이 규칙 파서가 실패했는데도 관련 신호어가 있으면, 조용히 "조건 없음"으로
-    # 넘어가지 말고 LLM 보조 추출을 한 번 더 시도한다(설계 원칙: 애매하면 확인하거나 물어본다).
-    extracted_conditions: dict[str, Any] = {}
-    condition_note: str | None = None
-    if intent in {"adoption_search", "travel_search"}:
-        size_unresolved = normalize_size(text) is None and has_size_signal(text)
-        rule_age = _rule_age_conditions(text)
-        age_unresolved = not rule_age and _age_signal(text)
-        if size_unresolved or age_unresolved:
-            verdict = _extract_conditions_llm(text)
-            if verdict is None:
-                condition_note = _LOW_CONFIDENCE_NOTE
-            else:
-                got_something = verdict.size or verdict.min_age is not None or verdict.max_age is not None
-                if verdict.confidence >= CONDITION_CONFIDENCE_THRESHOLD and got_something:
-                    if verdict.size:
-                        extracted_conditions["size"] = verdict.size
-                    if verdict.min_age is not None:
-                        extracted_conditions["min_age"] = verdict.min_age
-                    if verdict.max_age is not None:
-                        extracted_conditions["max_age"] = verdict.max_age
-                    condition_note = verdict.note
-                elif got_something:
-                    condition_note = verdict.note or _LOW_CONFIDENCE_NOTE
 
     return {
         "intent": intent,

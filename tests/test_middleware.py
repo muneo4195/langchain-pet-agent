@@ -352,3 +352,51 @@ def test_general_chat_does_not_strip_tools():
                               override=lambda **kw: seen.update(kw) or request)
     mw.intent_routing.wrap_model_call(request, lambda r: "ok")
     assert "tools" not in seen, "general_chat 에서는 도구 목록을 건드리지 않는다"
+
+
+ALL_TOOL_NAMES = ("search_rescued_animals", "get_animal_detail",
+                  "search_pet_friendly_travel", "get_pet_travel_detail", "save_user_preference")
+
+
+def restrict_tools(intent):
+    """S-07: intent_routing 이 실제로 Tool 목록을 줄이는지 확인하는 헬퍼."""
+    from types import SimpleNamespace
+
+    from petpal import middleware as mw
+
+    class FakeTool:
+        def __init__(self, name):
+            self.name = name
+
+    seen = {}
+    tools = [FakeTool(n) for n in ALL_TOOL_NAMES]
+    request = SimpleNamespace(state={"intent": intent}, tools=tools,
+                              override=lambda **kw: seen.update(kw) or request)
+    mw.intent_routing.wrap_model_call(request, lambda r: "ok")
+    return {t.name for t in seen.get("tools", tools)}
+
+
+def test_adoption_intent_restricts_tools_to_adoption_set():
+    """S-07: 입양 의도에서는 여행 Tool 이 노출되지 않아야 한다."""
+    assert restrict_tools("adoption_search") == {
+        "search_rescued_animals", "get_animal_detail", "save_user_preference",
+    }
+
+
+def test_adoption_detail_intent_also_restricts_tools():
+    """intent.startswith('adoption') 이므로 adoption_detail 도 같은 규칙을 적용받는다."""
+    assert restrict_tools("adoption_detail") == {
+        "search_rescued_animals", "get_animal_detail", "save_user_preference",
+    }
+
+
+def test_travel_intent_restricts_tools_to_travel_set():
+    """S-07: 여행 의도에서는 입양 Tool 이 노출되지 않아야 한다."""
+    assert restrict_tools("travel_search") == {
+        "search_pet_friendly_travel", "get_pet_travel_detail", "save_user_preference",
+    }
+
+
+def test_off_topic_intent_does_not_restrict_tools():
+    """off_topic 은 입력 가드레일에서 이미 걸러지지만, 만약 도달해도 전체 노출이 안전한 기본값이다."""
+    assert restrict_tools("off_topic") == set(ALL_TOOL_NAMES)
