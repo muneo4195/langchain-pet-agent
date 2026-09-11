@@ -62,3 +62,14 @@ def test_plain_message_path_is_masked():
     out = output_guardrail.after_agent(
         {"messages": [AIMessage(content="연락처 010-9999-8888")], "last_tool_results": {}}, None)
     assert "010-9999-8888" not in out["messages"][0].content
+
+
+def test_pii_masked_inside_cards():
+    """message 뿐 아니라 카드 본문의 연락처도 가린다."""
+    animal = card("A1").model_copy(update={"match_reason": "담당자 010-1111-2222 문의"})
+    place = PetTravelCard(content_id="C1", place_name="가", caution="예약 010-3333-4444")
+    response = AgentResponse(response_type="animal_list", message="안내",
+                             animals=[animal], places=[place])
+    fixed = run(response, {"animals": {"A1": {}}, "places": {"C1": {}}})["structured_response"]
+    assert "010-1111-2222" not in fixed.animals[0].match_reason
+    assert "010-3333-4444" not in fixed.places[0].caution
