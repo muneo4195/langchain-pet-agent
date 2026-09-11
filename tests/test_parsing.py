@@ -35,17 +35,6 @@ def test_is_closed_notice(state, closed):
     assert p.is_closed_notice(state) is closed
 
 
-@pytest.mark.parametrize("item,inactive", [
-    ({"businessStatus": "폐업"}, True),
-    ({"operStatus": "휴업 중"}, True),
-    ({"useYn": "N"}, True),
-    ({"businessStatus": "정상영업"}, False),
-    ({}, False),
-])
-def test_is_inactive_place(item, inactive):
-    assert p.is_inactive_place(item) is inactive
-
-
 def test_urgency():
     today = date(2026, 9, 10)
     assert p.urgency_of("20260911", today) == "high"

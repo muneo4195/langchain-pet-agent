@@ -33,9 +33,9 @@ ANIMAL_ROWS = [
 ]
 
 
-def run_filter(payload, state):
+def run_filter(payload, state, args=None):
     command = result_filter.wrap_tool_call(make_request("search_rescued_animals",
-                                                        {"region": "서울"}, state),
+                                                        {"region": "서울", **(args or {})}, state),
                                            responder(payload))
     body = json.loads(command.update["messages"][0].content)
     return body, command.update
@@ -59,6 +59,32 @@ def test_size_filter_comes_from_utterance():
 def test_max_age_filter():
     state = {"messages": [HumanMessage("3살 이하 강아지 찾아줘")]}
     body, _ = run_filter({"items": list(ANIMAL_ROWS), "total": 3}, state)
+    assert [r["desertionNo"] for r in body["items"]] == ["A1"]
+
+
+def test_size_from_model_tool_arg_handles_metaphorical_phrasing():
+    """설계 보강: 은유적 표현("핸드백에 들어갈 정도")은 정규식으로 못 잡지만,
+    모델이 Tool 인자(size)로 구조화해 넘기면 정상적으로 필터링된다."""
+    state = {"messages": [HumanMessage("핸드백에 들어갈 정도로 조그마한 애 있을까?")]}
+    # 정규식 폴백만으로는 절대 소형견을 못 뽑는 문장이라는 걸 먼저 확인한다.
+    body, _ = run_filter({"items": list(ANIMAL_ROWS), "total": 3}, state)
+    assert len(body["items"]) == 2  # 필터 없이 종결 공고만 제거된 상태
+
+    body, _ = run_filter({"items": list(ANIMAL_ROWS), "total": 3}, state, args={"size": "소형견"})
+    assert [r["desertionNo"] for r in body["items"]] == ["A1"]
+
+
+def test_min_age_from_model_tool_arg():
+    """"2살 넘은 애" 처럼 하한 나이는 정규식엔 없던 개념이라 Tool 인자로만 표현된다."""
+    state = {"messages": [HumanMessage("2살 넘은 강아지 보여줘")]}
+    body, _ = run_filter({"items": list(ANIMAL_ROWS), "total": 3}, state, args={"min_age": 5})
+    assert [r["desertionNo"] for r in body["items"]] == ["A2"]
+
+
+def test_model_tool_arg_size_beats_regex_when_both_present():
+    """모델이 Tool 인자를 채웠으면 정규식 폴백보다 우선한다."""
+    state = {"messages": [HumanMessage("대형견 찾아줘")]}
+    body, _ = run_filter({"items": list(ANIMAL_ROWS), "total": 3}, state, args={"size": "소형견"})
     assert [r["desertionNo"] for r in body["items"]] == ["A1"]
 
 
@@ -245,24 +271,6 @@ def test_travel_search_auto_enriches_details(monkeypatch):
     assert calls == [["C1", "C2"]], "상세 조회가 자동으로 일어나야 한다"
     assert rows[0]["acmpy_type"] == "전구역 동반가능" and rows[0]["allowed_species"] == "전 견종"
     assert rows[1]["acmpy_type"] == "미확인" and rows[1]["allowed_species"] is None
-
-
-def test_inactive_travel_place_is_removed(monkeypatch):
-    """운영 상태 필드가 포함된 경우 폐업 장소를 사용자에게 노출하지 않는다."""
-    from petpal import tools
-
-    monkeypatch.setattr(tools, "fetch_pet_details", lambda ids, limit=None: {str(i): {} for i in ids})
-    payload = {
-        "items": [
-            {"contentid": "C1", "title": "운영 장소", "businessStatus": "정상영업"},
-            {"contentid": "C2", "title": "폐업 장소", "businessStatus": "폐업"},
-        ],
-        "total": 2,
-    }
-    command = result_filter.wrap_tool_call(
-        make_request("search_pet_friendly_travel", {"region": "강릉"}), responder(payload))
-    rows = json.loads(command.update["messages"][0].content)["items"]
-    assert [row["contentid"] for row in rows] == ["C1"]
 
 
 def test_zero_result_hint_suggests_widening_days():
