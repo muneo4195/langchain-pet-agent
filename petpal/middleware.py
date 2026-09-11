@@ -320,6 +320,12 @@ def _wanted_from(state: PetPalState, args: dict[str, Any]) -> dict[str, Any]:
     current: dict[str, Any] = {}
     if size := normalize_size(text):
         current["size"] = size
+    if "순한" in text or "온순" in text or "얌전" in text:
+        current["gentle"] = True
+    if "활동량" in text and any(x in text for x in ("적", "낮", "많지", "크지")):
+        current["low_activity"] = True
+    if "아파트" in text or "실내" in text:
+        current["apartment"] = True
     if m := _AGE_RE.search(text):
         if "이하" in text or "미만" in text or "어린" in text:
             current["max_age"] = int(m.group(1))

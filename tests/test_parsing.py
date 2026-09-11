@@ -53,3 +53,18 @@ def test_match_score_is_rule_based():
     score, _ = p.match_score(item, {"size": "대형견", "upkind": "417000"})
     assert score == 0.5
     assert p.match_score(item, {})[0] == 0.5  # 조건이 없으면 중립값
+
+
+def test_match_score_can_use_special_mark_traits_conservatively():
+    item = {
+        "weight": "3(Kg)",
+        "upKindCd": "417000",
+        "upKindNm": "개",
+        "orgNm": "서울특별시",
+        "specialMark": "온순하고 활동량 적음. 실내 생활 가능",
+    }
+    wanted = {"size": "소형견", "gentle": True, "low_activity": True, "apartment": True}
+    score, reason = p.match_score(item, wanted)
+    assert score == 1.0
+    assert "순한(특이사항)" in reason
+    assert "저활동(특이사항)" in reason
