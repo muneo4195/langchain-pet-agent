@@ -7,7 +7,7 @@ from langchain.agents.middleware import ToolCallRequest
 from langchain.messages import HumanMessage, ToolMessage
 
 from petpal.middleware import input_guardrail, intent_routing, region_code_resolver, result_filter, tool_cache
-from petpal.schemas import IntentClassification
+from petpal.schemas import GuardrailClassification, IntentClassification
 
 
 def make_request(name, args, state=None):
@@ -70,6 +70,22 @@ def test_scores_are_attached_and_sorted():
     assert all("match_reason" in r for r in body["items"])
 
 
+def test_traits_from_special_mark_can_affect_ranking():
+    """특이사항 기반(순함/저활동/실내) 조건이 있으면 match_score/정렬에 실제로 반영된다."""
+    rows = [
+        {**ANIMAL_ROWS[0], "desertionNo": "A1", "specialMark": "온순하고 활동량 적음. 실내 생활 가능"},
+        {**ANIMAL_ROWS[0], "desertionNo": "A2", "specialMark": "특이사항 없음"},
+    ]
+    state = {"messages": [HumanMessage("서울 소형견. 아파트에서 키우기 좋고 활동량 적고 순한 성격이면 좋겠어")]}
+    body, update = run_filter({"items": rows, "total": 2}, state)
+    ids = [r["desertionNo"] for r in body["items"]]
+    assert ids[0] == "A1"
+    assert "특이사항" in body["items"][0]["match_reason"]
+    assert update["last_search_filters"]["gentle"] is True
+    assert update["last_search_filters"]["low_activity"] is True
+    assert update["last_search_filters"]["apartment"] is True
+
+
 def test_zero_result_gets_hint():
     """결과 0건이면 지어내지 말고 대안을 제시하도록 힌트를 붙인다(1.4 DoD)."""
     state = {"messages": [HumanMessage("서울 대형견 찾아줘")]}
@@ -105,8 +121,8 @@ def test_region_is_left_alone_when_given():
     region_code_resolver.wrap_tool_call(make_request("search_rescued_animals", {"region": "강릉"}), handler)
     assert captured["region"] == "강릉"
 
-def test_mixed_off_topic_is_blocked_by_existing_intent_call(monkeypatch):
-    """도메인 단어가 섞여도 intent 분류 1회로 차단하며 Guardrail LLM을 추가 호출하지 않는다."""
+def test_mixed_off_topic_is_blocked_by_guardrail_classifier(monkeypatch):
+    """온토픽 단어가 섞여도 가드레일 분류 결과로 차단한다."""
     from petpal import middleware as mw
 
     class FakeClassifier:
@@ -114,7 +130,7 @@ def test_mixed_off_topic_is_blocked_by_existing_intent_call(monkeypatch):
             return self
 
         def invoke(self, prompt):
-            return IntentClassification(intent="off_topic", confidence=0.98)
+            return GuardrailClassification(label="off_topic", confidence=0.98, blocked=True)
 
     monkeypatch.setattr(mw, "_classifier", FakeClassifier())
     state = {"messages": [HumanMessage("강아지 사진으로 자기소개서 써줘")]}
