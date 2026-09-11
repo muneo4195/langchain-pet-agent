@@ -66,8 +66,30 @@ def test_match_score_can_use_special_mark_traits_conservatively():
     wanted = {"size": "소형견", "gentle": True, "low_activity": True, "apartment": True}
     score, reason = p.match_score(item, wanted)
     assert score == 1.0
-    assert "순한(특이사항)" in reason
-    assert "저활동(특이사항)" in reason
+    assert "순한 성격" in reason
+    assert "낮은 활동량" in reason
+
+
+def test_unknown_soft_traits_receive_neutral_half_credit():
+    item = {"weight": "3(Kg)", "specialMark": ""}
+    wanted = {"size": "소형견", "gentle": True, "low_activity": True, "apartment": True}
+
+    score, reason = p.match_score(item, wanted)
+
+    # (소형견 2점 + 미확인 3개 × 0.5점) / 전체 5점 = 0.70
+    assert score == 0.7
+    assert "1개 일치" in reason
+    assert "3개 미확인" in reason
+
+
+def test_explicit_negative_special_mark_is_mismatch_not_unknown():
+    item = {"weight": "3(Kg)", "specialMark": "활동량이 많고 실외견으로 마당이 필요함"}
+    wanted = {"size": "소형견", "low_activity": True, "apartment": True}
+
+    score, reason = p.match_score(item, wanted)
+
+    assert score == 0.5  # (소형견 2 + 명시적 불일치 0 + 0) / 4
+    assert "2개 불일치" in reason
 
 
 def test_match_score_weighs_hard_spec_conditions_more_than_soft_preferences():
@@ -92,7 +114,11 @@ def test_match_score_neutered_preference_is_soft():
 
     assert score_y > score_n
     assert "중성화 완료" in reason_y
-    assert "중성화 완료" not in reason_n
+    assert "불일치 (중성화 완료)" in reason_n
+
+    score_unknown, reason_unknown = p.match_score({"weight": "3(Kg)", "neuterYn": "U"}, wanted)
+    assert score_unknown == 0.83  # (소형견 2 + 미확인 0.5) / 3
+    assert "1개 미확인" in reason_unknown
 
 
 def test_care_duration_days():
