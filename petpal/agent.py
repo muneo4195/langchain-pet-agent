@@ -8,12 +8,10 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     ToolRetryMiddleware,
 )
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.store.memory import InMemoryStore
-
 from .config import Settings, build_model
 from .context import PetPalContext
 from .middleware import CUSTOM_MIDDLEWARE
+from .persistence import build_persistence
 from .schemas import AgentResponse
 from .state import PetPalState
 from .tools import ALL_TOOLS
@@ -28,20 +26,30 @@ SYSTEM_PROMPT = """당신은 유기동물 입양 상담과 반려동물 동반�
 적합도 점수는 시스템이 계산해 전달한 값(match_score)만 그대로 인용하고 직접 매기지 않습니다.
 
 작업 규칙
-- 지역이나 조건이 주어지면 되묻지 말고 먼저 Tool 로 검색합니다. 지역명은 자연어 그대로
-  넘기면 시스템이 코드로 변환합니다. 결과를 보여준 뒤에 필요한 추가 조건을 제안하세요.
-- 동반 조건(동반유형·동반가능동물·필요사항)은 목록 조회에 포함되지 않습니다.
-  필요하면 search_pet_friendly_travel 결과의 content_id 상위 3~5건으로 get_pet_travel_detail 을 호출하세요.
+- 되묻기 전에 반드시 먼저 검색합니다. 지역이 하나라도 언급됐으면 그대로 Tool 에 넘기세요.
+  지역명은 자연어 그대로 넘기면 시스템이 코드로 변환합니다. 조건이 부족해도 일단 검색해
+  결과를 보여준 다음, 그 뒤에 좁힐 조건을 제안하세요. 검색 한 번도 하지 않고 선택지만
+  나열하는 답변은 하지 않습니다.
+- 동반 조건(동반유형·동반가능동물·필요사항)은 search_pet_friendly_travel 결과에 시스템이
+  자동으로 붙여 줍니다. 결과의 acmpy_type / allowed_species / caution 을 그대로 쓰세요.
+  특정 장소를 다시 확인해야 할 때만 get_pet_travel_detail 을 호출합니다.
+- 검색 결과가 0건이면 recent_days 를 넓히거나(예: 30 → 90) 인접 지역·다른 카테고리로
+  한 번 더 시도한 뒤에 사용자에게 알립니다.
 - 특정 동물의 상세를 물으면 직전 검색 결과의 desertionNo 로 get_animal_detail 을 호출하세요.
 - 최종 답변은 AgentResponse 스키마로 정리하되, animals/places 에는 Tool 결과에 실제로 있던 항목만 담습니다.
 - grounded 필드는 시스템이 검증해 채우므로 임의로 true 로 두지 마세요.
 """
 
 
-def build_agent(*, store=None, checkpointer=None, settings: Settings | None = None):
+def build_agent(*, store=None, checkpointer=None, settings: Settings | None = None,
+                in_memory: bool = False):
     """설계서 3.2 표 그대로의 미들웨어 구성으로 에이전트를 만든다."""
     s = settings or Settings.load()
     model = build_model(s.orchestrator_model, s.orchestrator_temperature)
+    if checkpointer is None or store is None:
+        default_checkpointer, default_store = build_persistence(in_memory=in_memory)
+        checkpointer = checkpointer if checkpointer is not None else default_checkpointer
+        store = store if store is not None else default_store
 
     middleware = [
         *CUSTOM_MIDDLEWARE,
@@ -59,7 +67,7 @@ def build_agent(*, store=None, checkpointer=None, settings: Settings | None = No
         response_format=AgentResponse,
         state_schema=PetPalState,
         context_schema=PetPalContext,
-        store=store if store is not None else InMemoryStore(),
-        checkpointer=checkpointer if checkpointer is not None else InMemorySaver(),
+        store=store,
+        checkpointer=checkpointer,
         name="함께갈개",
     )

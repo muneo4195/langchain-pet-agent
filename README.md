@@ -1,7 +1,6 @@
 # 함께갈개 (PetPal)
 
 유기동물 입양 매칭과 반려동물 동반여행 추천을 함께 처리하는 LangChain 에이전트.
-설계서 `4조_Agent_설계서_클로드_수정본.docx` 의 구현체다.
 
 ```
 사용자 ─▶ before_agent(가드레일·의도) ─▶ wrap_model_call(Tool 가시성·선호 주입)

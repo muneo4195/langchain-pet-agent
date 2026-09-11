@@ -10,3 +10,6 @@ __pycache__/
 *.key
 *.pem
 .DS_Store
+
+# 영속 저장(대화 이력·선호 정보)
+.data/

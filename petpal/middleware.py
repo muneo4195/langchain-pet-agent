@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+from collections import OrderedDict
 from typing import Any
 
 from langchain.agents.middleware import (
@@ -73,18 +74,20 @@ def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
     if not text:
         return None
 
+    previous_intent = state.get("intent")
     label, decided = rule_screen(text)
     confidence = 1.0 if decided else 0.0
 
     if not decided:  # 애매한 것만 모델에게 넘긴다(설계 원칙: 저비용 필터 우선)
         try:
             verdict = classifier().with_structured_output(GuardrailClassification).invoke(
-                guardrail_prompt(text)
+                guardrail_prompt(text, previous_intent)
             )
             label, confidence = verdict.label, verdict.confidence
-        except Exception as exc:  # 분류기 실패 시 통과시키되 규칙 필터 결과는 유지
-            log.warning("가드레일 분류 실패, 통과 처리: %s", exc)
-            label, confidence = "normal", 0.0
+        except Exception as exc:
+            # fail-open 금지 — 규칙 필터가 이미 off_topic 후보로 본 입력이므로 그 판정을 유지한다.
+            log.warning("가드레일 분류 실패, 규칙 판정(%s)을 유지합니다: %s", label, exc)
+            confidence = 0.0
 
     if label != "normal":
         return {
@@ -94,7 +97,6 @@ def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
         }
 
     # 지시어("거기", "그 아이")는 직전 의도를 모르면 판단할 수 없어 힌트로 넘긴다.
-    previous_intent = state.get("intent")
     intent = "general_chat"
     try:
         intent = classifier().with_structured_output(IntentClassification).invoke(
@@ -120,7 +122,8 @@ def intent_routing(request, handler):
     elif intent.startswith("travel"):
         keep = {"search_pet_friendly_travel", "get_pet_travel_detail", "save_user_preference"}
     else:
-        keep = {"save_user_preference"}
+        # general_chat 으로 잘못 분류되더라도 검색 능력을 잃지 않도록 제한하지 않는다.
+        return handler(request)
 
     # response_format 이 붙인 구조화 출력용 도구는 이름이 우리 Tool 목록에 없으므로 항상 남긴다.
     ours = {"search_rescued_animals", "get_animal_detail", "search_pet_friendly_travel",
@@ -179,7 +182,9 @@ def region_code_resolver(request, handler):
 
 
 # ────────────────────────────────────────────── ⑤ Tool 응답 캐싱 (TTL)
-_cache: dict[str, tuple[float, Any]] = {}
+# 프로세스가 오래 살아도 무한히 커지지 않도록 LRU 상한을 둔다.
+_CACHE_MAX_ENTRIES = 256
+_cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
 
 
 @wrap_tool_call(state_schema=PetPalState)
@@ -195,13 +200,17 @@ def tool_cache(request, handler):
 
     hit = _cache.get(key)
     if hit and time.time() - hit[0] < ttl:
-        cached = hit[1].model_copy(update={"tool_call_id": call["id"]})
+        _cache.move_to_end(key)
         log.debug("cache hit: %s", call["name"])
-        return cached
+        return hit[1].model_copy(update={"tool_call_id": call["id"]})
+    _cache.pop(key, None)  # 만료분 제거
 
     result = handler(request)
     if getattr(result, "content", None) and "api_failed" not in str(result.content):
         _cache[key] = (time.time(), result)
+        _cache.move_to_end(key)
+        while len(_cache) > _CACHE_MAX_ENTRIES:
+            _cache.popitem(last=False)
     return result
 
 
@@ -248,28 +257,31 @@ def result_filter(request, handler):
         kept = kept[:MAX_CARDS]
         payload["items"], payload["total"], payload["filtered_out"] = kept, len(kept), payload.get("total", 0) - len(kept)
         if not kept:
-            payload["no_result_hint"] = "조건에 맞는 공고가 없습니다. 인접 시군구나 다른 축종으로 넓혀볼 수 있습니다."
+            days = (request.tool_call.get("args") or {}).get("recent_days", 30)
+            payload["no_result_hint"] = (
+                f"최근 {days}일 공고 중에는 조건에 맞는 항목이 없습니다. "
+                f"recent_days 를 {days * 3} 로 넓히거나 인접 시군구·다른 축종으로 다시 검색할 수 있습니다."
+            )
         prev["animals"] = {**(prev.get("animals") or {}), **{r["desertionNo"]: r for r in kept}}
         update["last_search_filters"] = wanted
 
     elif name == "search_pet_friendly_travel":
         rows = payload.get("items", [])[:MAX_CARDS]
+        # 2.2 흐름 6단계 — 동반 조건은 목록 API 에 없으므로 여기서 상세를 붙인다.
+        # 모델의 판단에 맡기면 건너뛰는 경우가 있어 파이프라인에서 항상 수행한다.
+        if rows:
+            from .tools import fetch_pet_details
+
+            details = fetch_pet_details([str(r.get("contentid")) for r in rows])
+            for row in rows:
+                row.update(_normalize_detail(details.get(str(row.get("contentid")), {})))
         payload["items"], payload["total"] = rows, len(rows)
         if not rows:
             payload["no_result_hint"] = "등록된 동반 가능 장소가 없습니다. 인접 시군구나 다른 카테고리로 넓혀볼 수 있습니다."
         prev["places"] = {**(prev.get("places") or {}), **{str(r.get("contentid")): r for r in rows}}
 
     elif name == "get_pet_travel_detail":
-        details = {}
-        for cid, row in (payload.get("items") or {}).items():
-            details[cid] = {
-                "acmpy_type": (row.get("acmpyTypeCd") or "").strip() or "미확인",
-                "allowed_species": (row.get("acmpyPsblCpam") or "").strip() or None,
-                "caution": " ".join(
-                    x for x in [(row.get("acmpyNeedMtr") or "").strip(),
-                                (row.get("relaAcdntRiskMtr") or "").strip()] if x
-                )[:150] or None,
-            }
+        details = {cid: _normalize_detail(row) for cid, row in (payload.get("items") or {}).items()}
         payload["items"] = details
         places = dict(prev.get("places") or {})
         for cid, det in details.items():
@@ -284,19 +296,41 @@ def result_filter(request, handler):
     return Command(update={"messages": [new_msg], **update})
 
 
+def _normalize_detail(raw: dict[str, Any]) -> dict[str, Any]:
+    """detailPetTour2 의 빈 문자열을 '미확인'/None 으로 정리한다."""
+    return {
+        "acmpy_type": (raw.get("acmpyTypeCd") or "").strip() or "미확인",
+        "allowed_species": (raw.get("acmpyPsblCpam") or "").strip() or None,
+        "caution": " ".join(
+            x for x in [(raw.get("acmpyNeedMtr") or "").strip(),
+                        (raw.get("relaAcdntRiskMtr") or "").strip()] if x
+        )[:150] or None,
+    }
+
+
 def _wanted_from(state: PetPalState, args: dict[str, Any]) -> dict[str, Any]:
-    """사용자 발화에서 후처리 조건을 뽑는다(API 파라미터로는 거를 수 없는 것들)."""
+    """후처리 조건을 뽑되, 직전 검색 조건과 병합한다.
+
+    "서울 소형견 찾아줘" → "강릉으로 바꿔줘" 처럼 조건 일부만 다시 말하는 경우
+    앞서 말한 조건이 사라지면 안 된다(설계서 3.1 last_search_filters 용도).
+    이번 발화에서 명시한 값이 이전 값을 덮어쓴다.
+    """
     text = _last_human(state.get("messages") or [])
     # 지역은 API 파라미터(upr_cd/org_cd)로 이미 걸러졌으므로 적합도 항목에 넣지 않는다.
-    wanted: dict[str, Any] = {}
+    current: dict[str, Any] = {}
     if size := normalize_size(text):
-        wanted["size"] = size
+        current["size"] = size
     if m := _AGE_RE.search(text):
         if "이하" in text or "미만" in text or "어린" in text:
-            wanted["max_age"] = int(m.group(1))
+            current["max_age"] = int(m.group(1))
     if args.get("kind_name"):
-        wanted["kind_name"] = args["kind_name"]
-    return wanted
+        current["kind_name"] = args["kind_name"]
+
+    previous = dict(state.get("last_search_filters") or {})
+    merged = {**previous, **current}
+    if merged != current:
+        log.debug("이전 검색 조건과 병합: %s + %s → %s", previous, current, merged)
+    return merged
 
 
 # ────────────────────────────────────────────── ⑦ 출력 가드레일
@@ -322,6 +356,11 @@ def output_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
     if dropped:
         log.warning("근거 없는 카드 %d건을 제거했습니다.", dropped)
 
+    animals = [c.model_copy(update={"match_reason": mask_pii(c.match_reason)}) for c in animals]
+    places = [
+        c.model_copy(update={"caution": mask_pii(c.caution) if c.caution else None})
+        for c in places
+    ]
     message = mask_pii(response.message)
     if dropped and not (animals or places):
         message = "확인된 정보가 없습니다. 조건을 바꿔 다시 검색해 볼까요?"

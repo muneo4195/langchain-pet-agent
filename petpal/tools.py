@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
 from typing import Any
 
 from langchain.tools import ToolRuntime, tool
@@ -52,12 +53,32 @@ def _need_region(resolved: dict[str, Any], *keys: str) -> dict[str, Any] | None:
     return None
 
 
+def fetch_pet_details(content_ids: list[str], limit: int | None = None) -> dict[str, dict[str, Any]]:
+    """detailPetTour2 를 상위 N건만 병렬 조회한다. Tool 과 미들웨어가 함께 쓴다."""
+    svc = get_services()
+    ids = [str(c) for c in content_ids][: (limit or svc.settings.detail_fanout)]
+    if not ids:
+        return {}
+
+    def fetch(cid: str) -> tuple[str, dict[str, Any]]:
+        try:
+            return cid, svc.client.detail_pet_tour(cid)
+        except PublicDataError as exc:
+            log.warning("detailPetTour2(%s) 실패: %s", cid, exc)
+            return cid, {}
+
+    with ThreadPoolExecutor(max_workers=len(ids)) as pool:
+        return dict(pool.map(fetch, ids))
+
+
 @tool
 def search_rescued_animals(
     region: str,
     upkind: str = "",
     kind_name: str = "",
     state: str = "",
+    recent_days: int = 30,
+    page: int = 1,
 ) -> dict[str, Any]:
     """지역·축종·품종·공고상태 조건으로 구조(유기)동물 목록을 검색한다. 입양 후보를 찾을 때 사용.
 
@@ -66,6 +87,8 @@ def search_rescued_animals(
         upkind: 축종. '개' / '고양이' / '기타' 중 하나. 비우면 전체.
         kind_name: 품종명. 예: '푸들', '한국 고양이'. 비우면 전체.
         state: 'notice'(공고중) 또는 'protect'(보호중). 비우면 전체.
+        recent_days: 최근 며칠 이내의 공고를 볼지. 기본 30일. 결과가 없으면 90, 180 으로 넓힌다.
+        page: 결과 페이지. 더 보여달라고 하면 2, 3 으로 올린다.
 
     나이·성별·체중은 이 API 의 검색 파라미터가 아니라 응답 필드다. 크기나 나이 조건은
     이 Tool 을 호출한 뒤 결과에서 걸러지므로 여기서 지정하지 않는다.
@@ -83,7 +106,9 @@ def search_rescued_animals(
             upkind=upkind_cd,
             kind=kind_cd,
             state=state or None,
+            bgnde=(date.today() - timedelta(days=max(1, recent_days))).strftime("%Y%m%d"),
             num_of_rows=60,
+            page_no=max(1, page),
         )
     except PublicDataError as exc:
         log.warning("search_rescued_animals 실패: %s", exc)
@@ -95,6 +120,8 @@ def search_rescued_animals(
         "items": rows,
         "region": resolved_region.get("label") or region,
         "total": len(rows),
+        "recent_days": recent_days,
+        "page": page,
     }
 
 
@@ -136,6 +163,7 @@ def get_animal_detail(desertion_no: str, runtime: ToolRuntime) -> dict[str, Any]
 def search_pet_friendly_travel(
     region: str,
     category: str = "",
+    page: int = 1,
 ) -> dict[str, Any]:
     """반려동물 동반 가능한 관광지·숙소·음식점 목록을 지역/카테고리 조건으로 검색한다.
 
@@ -145,6 +173,9 @@ def search_pet_friendly_travel(
     Args:
         region: 지역명. '강릉', '서울 성수동' 처럼 자연어 그대로 넘긴다.
         category: '관광지' / '숙박' / '음식점' / '레포츠' / '문화시설' / '쇼핑' 중 하나. 비우면 전체.
+        page: 결과 페이지. 더 보여달라고 하면 2, 3 으로 올린다.
+
+    동반 조건은 시스템이 상위 몇 건에 대해 자동으로 붙여 주므로 따로 요청하지 않아도 된다.
     """
     resolved_region = _resolved_region(region)
     if err := _need_region(resolved_region, "l_dong_regn_cd"):
@@ -156,6 +187,7 @@ def search_pet_friendly_travel(
             l_dong_signgu_cd=resolved_region.get("l_dong_signgu_cd"),
             content_type_id=CONTENT_TYPE.get(category.strip()) if category else None,
             num_of_rows=20,
+            page_no=max(1, page),
         )
     except PublicDataError as exc:
         log.warning("search_pet_friendly_travel 실패: %s", exc)
@@ -166,6 +198,7 @@ def search_pet_friendly_travel(
         "region": resolved_region.get("label") or region,
         "category": category,
         "total": len(rows),
+        "page": page,
     }
 
 
@@ -179,20 +212,7 @@ def get_pet_travel_detail(content_ids: list[str]) -> dict[str, Any]:
     Args:
         content_ids: 조회할 콘텐츠ID 목록. 최대 5개까지만 처리된다.
     """
-    svc = get_services()
-    ids = [str(c) for c in content_ids][: svc.settings.detail_fanout]
-    if not ids:
-        return {"items": {}}
-
-    def fetch(cid: str) -> tuple[str, dict[str, Any]]:
-        try:
-            return cid, svc.client.detail_pet_tour(cid)
-        except PublicDataError as exc:
-            log.warning("detailPetTour2(%s) 실패: %s", cid, exc)
-            return cid, {}
-
-    with ThreadPoolExecutor(max_workers=len(ids)) as pool:
-        results = dict(pool.map(fetch, ids))
+    results = fetch_pet_details(content_ids)
     return {"items": results, "total": len(results)}
 
 

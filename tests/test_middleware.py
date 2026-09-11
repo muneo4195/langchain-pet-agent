@@ -140,3 +140,90 @@ def test_cache_avoids_second_call():
     tool_cache.wrap_tool_call(req, handler)
     tool_cache.wrap_tool_call(req, handler)
     assert len(calls) == 1
+
+
+def test_previous_filters_are_merged():
+    """조건 일부만 다시 말해도 앞서 말한 조건이 유지된다(3.1 last_search_filters)."""
+    state = {
+        "messages": [HumanMessage("강릉으로 바꿔줘")],   # 이번 발화엔 크기 조건이 없다
+        "last_search_filters": {"size": "소형견"},
+    }
+    body, update = run_filter({"items": list(ANIMAL_ROWS), "total": 3}, state)
+    assert update["last_search_filters"]["size"] == "소형견"
+    assert [r["desertionNo"] for r in body["items"]] == ["A1"]   # 소형견 필터가 계속 적용됨
+
+
+def test_new_value_overrides_previous():
+    state = {
+        "messages": [HumanMessage("중형견으로 보여줘")],
+        "last_search_filters": {"size": "소형견"},
+    }
+    body, update = run_filter({"items": list(ANIMAL_ROWS), "total": 3}, state)
+    assert update["last_search_filters"]["size"] == "중형견"
+    assert [r["desertionNo"] for r in body["items"]] == ["A2"]
+
+
+def test_cache_is_bounded():
+    """오래 돌아도 캐시가 무한히 커지지 않는다."""
+    from petpal import middleware as mw
+
+    mw._cache.clear()
+
+    def handler(request):
+        return ToolMessage(content='{"items": []}', tool_call_id="call-1")
+
+    for i in range(mw._CACHE_MAX_ENTRIES + 40):
+        req = make_request("search_pet_friendly_travel", {"region": f"지역{i}"})
+        mw.tool_cache.wrap_tool_call(req, handler)
+    assert len(mw._cache) == mw._CACHE_MAX_ENTRIES
+    mw._cache.clear()
+
+
+def test_travel_search_auto_enriches_details(monkeypatch):
+    """동반조건은 모델 판단에 맡기지 않고 파이프라인이 항상 붙인다(2.2 흐름 6단계)."""
+    from petpal import tools
+
+    calls = []
+
+    def fake_fetch(ids, limit=None):
+        calls.append(list(ids))
+        return {"C1": {"acmpyTypeCd": "전구역 동반가능", "acmpyPsblCpam": "전 견종"},
+                "C2": {}}
+
+    monkeypatch.setattr(tools, "fetch_pet_details", fake_fetch)
+    payload = {"items": [{"contentid": "C1", "title": "가"}, {"contentid": "C2", "title": "나"}], "total": 2}
+    command = result_filter.wrap_tool_call(
+        make_request("search_pet_friendly_travel", {"region": "강릉"}), responder(payload))
+    rows = json.loads(command.update["messages"][0].content)["items"]
+
+    assert calls == [["C1", "C2"]], "상세 조회가 자동으로 일어나야 한다"
+    assert rows[0]["acmpy_type"] == "전구역 동반가능" and rows[0]["allowed_species"] == "전 견종"
+    assert rows[1]["acmpy_type"] == "미확인" and rows[1]["allowed_species"] is None
+
+
+def test_zero_result_hint_suggests_widening_days():
+    """0건이면 조회 기간을 넓히는 구체적 수단을 알려준다."""
+    state = {"messages": [HumanMessage("서울 대형견 찾아줘")]}
+    request = make_request("search_rescued_animals", {"region": "서울", "recent_days": 30}, state)
+    command = result_filter.wrap_tool_call(request, responder({"items": [ANIMAL_ROWS[0]], "total": 1}))
+    hint = json.loads(command.update["messages"][0].content)["no_result_hint"]
+    assert "recent_days" in hint and "90" in hint
+
+
+def test_general_chat_does_not_strip_tools():
+    """의도 분류가 틀려도 검색 능력을 잃지 않아야 한다."""
+    from types import SimpleNamespace
+
+    from petpal import middleware as mw
+
+    seen = {}
+
+    class FakeTool:
+        def __init__(self, name):
+            self.name = name
+
+    tools = [FakeTool(n) for n in ("search_rescued_animals", "search_pet_friendly_travel")]
+    request = SimpleNamespace(state={"intent": "general_chat"}, tools=tools,
+                              override=lambda **kw: seen.update(kw) or request)
+    mw.intent_routing.wrap_model_call(request, lambda r: "ok")
+    assert "tools" not in seen, "general_chat 에서는 도구 목록을 건드리지 않는다"
