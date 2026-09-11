@@ -25,6 +25,7 @@ INTENT_CASES = [
     ("거기 실내에도 데리고 들어가도 돼?", "travel_search", "travel_detail"),
     ("유기견 입양하면 예방접종 다시 해야 해?", None, "general_chat"),
     ("안녕", None, "general_chat"),
+    ("고양이 사진으로 자기소개서 써줘", None, "off_topic"),
 ]
 
 GUARDRAIL_CASES = [

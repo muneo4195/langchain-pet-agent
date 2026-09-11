@@ -6,7 +6,8 @@ import pytest
 from langchain.agents.middleware import ToolCallRequest
 from langchain.messages import HumanMessage, ToolMessage
 
-from petpal.middleware import intent_routing, region_code_resolver, result_filter, tool_cache
+from petpal.middleware import input_guardrail, intent_routing, region_code_resolver, result_filter, tool_cache
+from petpal.schemas import IntentClassification
 
 
 def make_request(name, args, state=None):
@@ -103,6 +104,24 @@ def test_region_is_left_alone_when_given():
 
     region_code_resolver.wrap_tool_call(make_request("search_rescued_animals", {"region": "강릉"}), handler)
     assert captured["region"] == "강릉"
+
+def test_mixed_off_topic_is_blocked_by_existing_intent_call(monkeypatch):
+    """도메인 단어가 섞여도 intent 분류 1회로 차단하며 Guardrail LLM을 추가 호출하지 않는다."""
+    from petpal import middleware as mw
+
+    class FakeClassifier:
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, prompt):
+            return IntentClassification(intent="off_topic", confidence=0.98)
+
+    monkeypatch.setattr(mw, "_classifier", FakeClassifier())
+    state = {"messages": [HumanMessage("강아지 사진으로 자기소개서 써줘")]}
+    update = input_guardrail.before_agent(state, None)
+
+    assert update["jump_to"] == "end"
+    assert update["guardrail"] == {"label": "off_topic", "confidence": 0.98, "blocked": True}
 
 
 def test_code_tables_map_both_apis(monkeypatch):
