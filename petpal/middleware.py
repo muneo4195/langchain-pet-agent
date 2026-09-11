@@ -185,6 +185,23 @@ def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
         log.warning("의도 분류 실패, 전체 Tool 노출: %s", exc)
         intent = ""
 
+    # 규칙 파서가 신호어(크기·나이 언급)를 감지했는데 값을 못 뽑았을 때만 LLM 보조로 넘긴다.
+    extracted_conditions: dict[str, Any] = {}
+    condition_note = None
+    needs_size = has_size_signal(text) and not normalize_size(text)
+    needs_age = _age_signal(text) and not _rule_age_conditions(text)
+    if needs_size or needs_age:
+        extraction = _extract_conditions_llm(text)
+        if extraction is not None:
+            if extraction.size:
+                extracted_conditions["size"] = extraction.size
+            if extraction.min_age is not None:
+                extracted_conditions["min_age"] = extraction.min_age
+            if extraction.max_age is not None:
+                extracted_conditions["max_age"] = extraction.max_age
+            if extraction.confidence < CONDITION_CONFIDENCE_THRESHOLD:
+                condition_note = extraction.note or _LOW_CONFIDENCE_NOTE
+
     return {
         "intent": intent,
         "guardrail": {"label": "normal", "confidence": confidence, "blocked": False},
