@@ -49,9 +49,12 @@ def test_places_are_checked_too():
 
 
 def test_pii_masked_in_final_message():
-    response = AgentResponse(response_type="general_chat", message="담당자 010-1234-5678 로 연락하세요")
+    response = AgentResponse(response_type="general_chat", message="담당자01012345678로 연락하세요. 메일me@example.com입니다")
     fixed = run(response, {})["structured_response"]
-    assert "010-1234-5678" not in fixed.message
+    assert "01012345678" not in fixed.message
+    assert "me@example.com" not in fixed.message
+    assert "010-****-****" in fixed.message
+    assert "***@***" in fixed.message
 
 
 def test_plain_message_path_is_masked():
