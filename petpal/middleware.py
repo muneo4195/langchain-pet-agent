@@ -37,7 +37,7 @@ from .parsing import (
     size_of,
     urgency_of,
 )
-from .schemas import AgentResponse, GuardrailClassification, IntentClassification
+from .schemas import AgentResponse, GuardrailClassification, INTENT_TO_RESPONSE, IntentClassification
 from .services import get_services
 from .state import PetPalState
 
@@ -449,14 +449,19 @@ def output_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
     if dropped and not unsafe_output and not (animals or places):
         message = "확인된 정보가 없습니다. 조건을 바꿔 다시 검색해 볼까요?"
 
-    if response.response_type == "animal_list":
+    intent = (state.get("intent") or "").strip()
+    desired_type = INTENT_TO_RESPONSE.get(intent, "general_chat")
+    inferred_type = "animal_list" if animals else "travel_list" if places else desired_type
+
+    if inferred_type == "animal_list":
         has_evidence = "animals" in results
-    elif response.response_type == "travel_list":
+    elif inferred_type == "travel_list":
         has_evidence = "places" in results
     else:
         has_evidence = False
 
     fixed = response.model_copy(update={
+        "response_type": inferred_type,
         "animals": animals,
         "places": places,
         "message": message,

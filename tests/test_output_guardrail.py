@@ -48,6 +48,71 @@ def test_places_are_checked_too():
     assert [c.content_id for c in fixed.places] == ["C1"]
 
 
+def test_response_type_is_overridden_by_intent_mapping():
+    """response_type 은 모델이 임의로 정하지 않고 intent/내용으로 시스템이 보정한다."""
+    response = AgentResponse(
+        response_type="general_chat",
+        message="두 마리 찾았어요",
+        animals=[card("A1")],
+    )
+    out = output_guardrail.after_agent(
+        {"messages": [], "intent": "adoption_search", "structured_response": response, "last_tool_results": {"animals": {"A1": {}}}},
+        None,
+    )
+    fixed = out["structured_response"]
+    assert fixed.response_type == "animal_list"
+
+
+def test_response_type_prefers_places_when_only_places_present():
+    response = AgentResponse(
+        response_type="animal_list",
+        message="장소 안내",
+        places=[PetTravelCard(content_id="C1", place_name="고심스테이")],
+    )
+    out = output_guardrail.after_agent(
+        {"messages": [], "intent": "travel_search", "structured_response": response, "last_tool_results": {"places": {"C1": {}}}},
+        None,
+    )
+    fixed = out["structured_response"]
+    assert fixed.response_type == "travel_list"
+
+
+def test_response_type_falls_back_to_intent_when_no_cards():
+    response = AgentResponse(
+        response_type="animal_list",
+        message="대화",
+        animals=[],
+        places=[],
+    )
+    out = output_guardrail.after_agent(
+        {"messages": [], "intent": "general_chat", "structured_response": response, "last_tool_results": {}},
+        None,
+    )
+    fixed = out["structured_response"]
+    assert fixed.response_type == "general_chat"
+
+
+def test_response_type_prefers_animals_when_both_present():
+    """비정상 출력(animals+places 동시)일 때도 시스템 보정이 결정적이어야 한다."""
+    response = AgentResponse(
+        response_type="general_chat",
+        message="둘 다",
+        animals=[card("A1")],
+        places=[PetTravelCard(content_id="C1", place_name="고심스테이")],
+    )
+    out = output_guardrail.after_agent(
+        {
+            "messages": [],
+            "intent": "travel_search",
+            "structured_response": response,
+            "last_tool_results": {"animals": {"A1": {}}, "places": {"C1": {}}},
+        },
+        None,
+    )
+    fixed = out["structured_response"]
+    assert fixed.response_type == "animal_list"
+
+
 def test_pii_masked_in_final_message():
     response = AgentResponse(response_type="general_chat", message="담당자01012345678로 연락하세요. 메일me@example.com입니다")
     fixed = run(response, {})["structured_response"]
