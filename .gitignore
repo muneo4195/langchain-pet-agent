@@ -1,0 +1,12 @@
+.env
+.cache/
+venv/
+__pycache__/
+*.pyc
+
+# 실수 방지: .env 파생 파일은 전부 제외하되 양식만 예외로 추적한다
+.env.*
+!.env.example
+*.key
+*.pem
+.DS_Store
