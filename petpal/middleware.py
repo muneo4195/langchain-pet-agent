@@ -369,6 +369,8 @@ def _wanted_from(state: PetPalState, args: dict[str, Any]) -> dict[str, Any]:
         current["low_activity"] = True
     if "아파트" in text or "실내" in text:
         current["apartment"] = True
+    if "중성화" in text and not any(x in text for x in ("상관없", "안 해도", "안해도", "필요없")):
+        current["neutered"] = True
     if m := _AGE_RE.search(text):
         if "이하" in text or "미만" in text or "어린" in text:
             current["max_age"] = int(m.group(1))
