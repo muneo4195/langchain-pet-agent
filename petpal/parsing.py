@@ -102,6 +102,17 @@ def match_score(item: dict, wanted: dict) -> tuple[float, str]:
     (일치한 조건 수 / 요청한 조건 수) 로 계산하고 근거 문구를 함께 돌려준다.
     """
     checks: list[tuple[bool, str]] = []
+    special = str(item.get("specialMark") or "")
+    blob = f"{item.get('orgNm', '')} {item.get('careAddr', '')} {item.get('happenPlace', '')}"
+
+    def _has_any(patterns: list[str], text: str) -> bool:
+        return any(re.search(p, text) for p in patterns)
+
+    # 공고 특이사항(specialMark)은 자유 텍스트라 정확한 필터가 불가능하다.
+    # 대신 '언급이 있는 경우에만' 신호로 삼아 보수적으로 반영한다.
+    _GENTLE = [r"순하", r"온순", r"얌전", r"사람\s*좋아", r"친화", r"애교"]
+    _LOW_ACTIVITY = [r"활동량.{0,4}(적|낮)", r"조용", r"차분", r"실내\s*위주", r"산책.{0,4}적"]
+    _APARTMENT = [r"아파트", r"실내", r"실내견", r"집\s*에서", r"실내\s*생활"]
 
     if wanted.get("size"):
         got = size_of(parse_weight_kg(item.get("weight")))
@@ -113,11 +124,16 @@ def match_score(item: dict, wanted: dict) -> tuple[float, str]:
     if wanted.get("sex"):
         checks.append((item.get("sexCd") == wanted["sex"], "성별"))
     if wanted.get("region_name"):
-        blob = f"{item.get('orgNm', '')} {item.get('careAddr', '')} {item.get('happenPlace', '')}"
         checks.append((wanted["region_name"] in blob, wanted["region_name"]))
     if wanted.get("max_age") is not None:
         got = age_years(item.get("age"))
         checks.append((got is not None and got <= wanted["max_age"], f"{wanted['max_age']}살 이하"))
+    if wanted.get("gentle"):
+        checks.append((_has_any(_GENTLE, special), "순한(특이사항)"))
+    if wanted.get("low_activity"):
+        checks.append((_has_any(_LOW_ACTIVITY, special), "저활동(특이사항)"))
+    if wanted.get("apartment"):
+        checks.append((_has_any(_APARTMENT, special), "아파트/실내(특이사항)"))
 
     if not checks:
         return 0.5, "조건이 지정되지 않아 최신 공고 순으로 제시합니다"
@@ -125,4 +141,9 @@ def match_score(item: dict, wanted: dict) -> tuple[float, str]:
     hit = [label for ok, label in checks if ok]
     score = round(len(hit) / len(checks), 2)
     reason = f"요청 조건 {len(checks)}개 중 {len(hit)}개 일치" + (f" ({', '.join(hit)})" if hit else "")
+    # 특이사항 기반 조건은 '언급이 없는 경우'가 많아, 근거가 없을 때는 미확인을 분명히 남긴다.
+    wants_traits = any(wanted.get(k) for k in ("gentle", "low_activity", "apartment"))
+    hit_trait = any("특이사항" in h for h in hit)
+    if wants_traits and not hit_trait:
+        reason += " / 특이사항 없음" if not special.strip() else " / 특이사항 근거 없음"
     return score, reason[:100]

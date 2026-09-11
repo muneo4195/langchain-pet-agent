@@ -134,8 +134,14 @@ BLOCK_MESSAGE = {
 }
 
 # 개인 휴대폰만 마스킹한다. 보호소 대표번호(지역번호)는 안내에 필요하므로 남긴다.
-MOBILE_RE = re.compile(r"\b01[016-9][-.\s]?\d{3,4}[-.\s]?\d{4}\b")
-EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b")
+#
+# 주의: \b(word boundary)는 유니코드 문자(한글 등)와 숫자가 모두 \w 로 취급되어
+# "01012345678입니다" 같은 케이스에서 경계로 인식되지 않아 마스킹이 누락될 수 있다.
+# 숫자/이메일 문자 셋을 기준으로 lookaround 를 사용해 누락을 줄인다.
+MOBILE_RE = re.compile(r"(?<!\d)01[016-9][-.\s]?\d{3,4}[-.\s]?\d{4}(?!\d)")
+EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9_.+-])[A-Za-z0-9_.+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9-.]+(?![A-Za-z0-9_.+-])"
+)
 
 
 def rule_screen(text: str) -> tuple[str, bool]:
