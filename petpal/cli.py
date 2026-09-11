@@ -9,6 +9,7 @@ import uuid
 
 from .agent import build_agent
 from .context import PetPalContext
+from .guardrails import mask_pii
 from .middleware import text_of
 from .schemas import AgentResponse
 
@@ -18,7 +19,7 @@ BANNER = """
 """
 
 
-def render(state: dict) -> str:
+def render(state: dict, *, show_special_mark: bool = False) -> str:
     out: list[str] = []
     guardrail = state.get("guardrail") or {}
     if guardrail.get("blocked"):
@@ -27,6 +28,8 @@ def render(state: dict) -> str:
 
     response = state.get("structured_response")
     if isinstance(response, AgentResponse):
+        results = state.get("last_tool_results") or {}
+        known_animals = (results.get("animals") or {}) if isinstance(results, dict) else {}
         out.append(response.message)
         for card in response.animals:
             urgency = f"  [마감임박:{card.urgency}]" if card.urgency == "high" else ""
@@ -34,6 +37,11 @@ def render(state: dict) -> str:
                 f"  · {card.kind_name} ({card.desertion_no}) — {card.shelter_name}"
                 f"  적합도 {card.match_score:.2f}{urgency}\n    {card.match_reason}"
             )
+            if show_special_mark:
+                row = known_animals.get(str(card.desertion_no)) or {}
+                special = (row.get("specialMark") or "").strip()
+                if special:
+                    out.append(f"    특이사항: {mask_pii(special)[:200]}")
         for card in response.places:
             extra = f" / {card.allowed_species}" if card.allowed_species else ""
             out.append(f"  · {card.place_name} ({card.content_id}) — {card.acmpy_type}{extra}")
@@ -55,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--user", default="demo-user", help="Runtime Context 의 user_id")
     parser.add_argument("--thread", default=None, help="대화 스레드 ID(생략 시 새로 생성)")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--show-special", action="store_true", help="검색 결과 카드에 특이사항(specialMark) 출력")
     parser.add_argument("question", nargs="*", help="한 번만 물어보고 종료")
     args = parser.parse_args(argv)
 
@@ -71,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         config = {"configurable": {"thread_id": thread_id}}
         state = agent.invoke({"messages": [{"role": "user", "content": text}]},
                             config=config, context=context)
-        print(render(state), "\n")
+        print(render(state, show_special_mark=args.show_special), "\n")
 
     if args.question:
         ask(" ".join(args.question))
