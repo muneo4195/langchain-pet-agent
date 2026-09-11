@@ -1,13 +1,14 @@
 """설계서 3.2 — 미들웨어 동작 검증 (TS-07 계열). LLM 호출 없이 순수 로직만 확인한다."""
 
 import json
+from datetime import date
 
 import pytest
 from langchain.agents.middleware import ToolCallRequest
 from langchain.messages import HumanMessage, ToolMessage
 
 from petpal.middleware import input_guardrail, intent_routing, region_code_resolver, result_filter, tool_cache
-from petpal.schemas import GuardrailClassification, IntentClassification
+from petpal.schemas import ConditionExtraction, GuardrailClassification, IntentClassification
 
 
 def make_request(name, args, state=None):
@@ -94,6 +95,58 @@ def test_scores_are_attached_and_sorted():
     scores = [r["match_score"] for r in body["items"]]
     assert scores == sorted(scores, reverse=True)
     assert all("match_reason" in r for r in body["items"])
+
+
+def test_llm_condition_extraction_fills_size_when_rule_misses(monkeypatch):
+    """규칙 normalize_size가 못 잡아도 size 신호어가 있으면 LLM 보조 추출로 size를 채운다."""
+    from petpal import middleware as mw
+
+    class FakeClassifier:
+        def __init__(self):
+            self.schema = None
+
+        def with_structured_output(self, schema):
+            self.schema = schema
+            return self
+
+        def invoke(self, prompt):
+            if self.schema is IntentClassification:
+                return IntentClassification(intent="adoption_search", confidence=0.9)
+            if self.schema is ConditionExtraction:
+                return ConditionExtraction(size="소형견", min_age=None, max_age=None, confidence=0.9, note=None)
+            raise AssertionError(f"unexpected schema: {self.schema}")
+
+    monkeypatch.setattr(mw, "rule_screen", lambda _: ("normal", True))
+    monkeypatch.setattr(mw, "_classifier", FakeClassifier())
+
+    # '한 손에 쏙 들어가는'은 normalize_size alias에 없지만 크기 신호어로 감지되어 LLM 보조가 동작해야 한다.
+    text = "서울에서 한 손에 쏙 들어가는 애로 보여줘"
+    state = {"messages": [HumanMessage(text)]}
+    update = input_guardrail.before_agent(state, None)
+    assert update["extracted_conditions"]["size"] == "소형견"
+
+    # 결과 필터가 이 값을 _wanted_from에서 병합해 실제 하드 필터(size)에 반영한다.
+    year = date.today().year
+    rows = [
+        {**ANIMAL_ROWS[0], "desertionNo": "A1", "weight": "5(Kg)", "age": f"{year}(년생)"},
+        {**ANIMAL_ROWS[0], "desertionNo": "A2", "weight": "20(Kg)", "age": f"{year}(년생)"},
+    ]
+    state2 = {**state, **update}
+    body, _ = run_filter({"items": rows, "total": 2}, state2)
+    assert [r["desertionNo"] for r in body["items"]] == ["A1"]
+
+
+def test_rule_age_conditions_support_year_and_exclusion_phrases():
+    """'2년 넘은 애는 말고' 같은 표현이 max_age로 해석되어 하드 필터에 적용된다."""
+    year = date.today().year
+    rows = [
+        {**ANIMAL_ROWS[0], "desertionNo": "A1", "age": f"{year}(년생)"},
+        {**ANIMAL_ROWS[0], "desertionNo": "A2", "age": f"{year-5}(년생)"},
+    ]
+    state = {"messages": [HumanMessage("서울에서 2년 넘은 애는 말고")]}
+    body, update = run_filter({"items": rows, "total": 2}, state)
+    assert [r["desertionNo"] for r in body["items"]] == ["A1"]
+    assert update["last_search_filters"]["max_age"] == 2
 
 
 def test_traits_from_special_mark_can_affect_ranking():

@@ -38,6 +38,25 @@ class IntentClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0, description="분류 신뢰도")
 
 
+class ConditionExtraction(BaseModel):
+    """크기/나이 규칙 파서가 실패했을 때만 호출되는 보조 추출 결과.
+
+    규칙(정규식·별칭 사전)이 신호어를 감지했는데도 값을 못 뽑았을 때만 호출되므로,
+    이 스키마가 항상 쓰이는 것은 아니다(설계 원칙: 저비용 필터 우선).
+    """
+
+    size: Literal["소형견", "중형견", "대형견"] | None = Field(
+        default=None, description="문맥상 추정되는 체구 구간. 언급이 없으면 None"
+    )
+    min_age: int | None = Field(default=None, ge=0, description="이 나이 이상만 원할 때(년)")
+    max_age: int | None = Field(default=None, ge=0, description="이 나이 이하만 원할 때(년)")
+    confidence: float = Field(ge=0.0, le=1.0, description="추출 신뢰도")
+    note: str | None = Field(
+        default=None, max_length=80,
+        description="애매해서 사용자 확인이 필요한 경우, 무엇을 어떻게 이해했는지 짧게(비노출 원문 아님)",
+    )
+
+
 class AnimalCard(BaseModel):
     """유기동물 결과 카드."""
 

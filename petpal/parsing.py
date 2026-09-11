@@ -14,10 +14,23 @@ _NUM = re.compile(r"-?\d+(?:\.\d+)?")
 
 SIZE_BOUNDS = {"소형견": (0.0, 10.0), "중형견": (10.0, 25.0), "대형견": (25.0, 1_000.0)}
 SIZE_ALIASES = {
-    "소형": "소형견", "소형견": "소형견", "작은": "소형견",
+    # "확실히" 크기 구간을 지정하는 리터럴만 규칙으로 바로 매핑한다.
+    # 우회 표현(핸드백/덩치 등)은 여기서 단정하지 않고 SIZE_SIGNAL_WORDS 로만 감지해
+    # input_guardrail 의 LLM 보조 추출(확인 질문 포함)로 넘긴다.
+    "소형": "소형견", "소형견": "소형견",
     "중형": "중형견", "중형견": "중형견",
-    "대형": "대형견", "대형견": "대형견", "큰": "대형견",
+    "대형": "대형견", "대형견": "대형견",
 }
+# normalize_size 가 None 을 반환했을 때, 애초에 크기 얘기를 한 건지(=규칙 실패) vs
+# 크기 얘기 자체가 없는 건지(=조건 없음)를 구분하기 위한 신호어.
+SIZE_SIGNAL_WORDS = (
+    "사이즈", "크기", "몸집", "체구", "덩치", "체형",
+    # 크기를 직접 말하지 않고 돌려 말하는 표현들(규칙으로 단정하지 않고 신호만 감지).
+    "작은", "큰", "조그마", "조그맣", "초소형", "미니",
+    "핸드백", "가방", "품에", "손바닥", "아담",
+    "우람", "골격", "왕치",
+    "한 손", "손에", "들어갈", "쏙",
+) + tuple(SIZE_ALIASES.keys())
 
 
 def parse_number(raw: object) -> float | None:
@@ -61,6 +74,13 @@ def normalize_size(text: str | None) -> str | None:
         if alias in text:
             return canonical
     return None
+
+
+def has_size_signal(text: str | None) -> bool:
+    """크기 관련 표현이 있었는지(=규칙이 놓쳤어도 후속 처리가 필요한지) 판별."""
+    if not text:
+        return False
+    return any(word in text for word in SIZE_SIGNAL_WORDS)
 
 
 def is_closed_notice(process_state: object) -> bool:

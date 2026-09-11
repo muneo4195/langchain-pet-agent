@@ -18,3 +18,5 @@ class PetPalState(AgentState):
     last_search_filters: NotRequired[dict[str, Any]]
     last_tool_results: NotRequired[dict[str, Any]]  # grounded 대조 근거
     structured_response: NotRequired[AgentResponse | None]
+    extracted_conditions: NotRequired[dict[str, Any]]  # 규칙 실패 시 LLM 보조 추출 결과(있으면 병합)
+    condition_note: NotRequired[str | None]  # 조건 해석이 불확실할 때 사용자에게 보여줄 확인 문구

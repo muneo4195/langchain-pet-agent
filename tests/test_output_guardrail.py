@@ -122,6 +122,27 @@ def test_pii_masked_in_final_message():
     assert "***@***" in fixed.message
 
 
+def test_condition_note_is_appended_to_message():
+    """규칙 파서가 놓친 조건이 있으면 조용히 무시하지 않고 확인 문구를 붙인다."""
+    response = AgentResponse(
+        response_type="animal_list",
+        message="결과입니다",
+        animals=[card("A1")],
+    )
+    out = output_guardrail.after_agent(
+        {
+            "messages": [],
+            "condition_note": "크기 조건을 '소형견'으로 이해했는데 맞나요?",
+            "structured_response": response,
+            "last_tool_results": {"animals": {"A1": {}}},
+        },
+        None,
+    )
+    fixed = out["structured_response"]
+    assert "(확인)" in fixed.message
+    assert "소형견" in fixed.message
+
+
 def test_plain_message_path_is_masked():
     """구조화 응답이 없을 때(가드레일 차단 등)도 최종 메시지를 마스킹한다."""
     out = output_guardrail.after_agent(
