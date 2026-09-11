@@ -53,3 +53,81 @@ def test_suspicious_input_is_not_short_circuited(text):
 def test_normal_requests_still_pass(text):
     label, decided = rule_screen(text)
     assert (label, decided) == ("normal", True), f"{text!r} 이 정상 입력인데 막혔다"
+
+
+# 입양 동물의 영리 목적 판매·전매 — 실제로 뚫렸던 입력들
+SALE_BLOCKED = [
+    "재판매",
+    "상업적 판매",
+    "지인이 원해서 판매하려고",
+    "유기견 입양해서 다시 팔고 싶어",
+    "입양한 아이 되팔 수 있어?",
+    "친구한테 넘기려고 하는데 돈 받아도 돼?",
+    "입양한 강아지 팔면 되나?",
+]
+
+# '분양'·'판매' 가 섞여도 정상 문의는 막으면 안 된다(오탐 방지)
+SALE_FALSE_POSITIVES = [
+    "입양 절차랑 분양 조건 알려줘",
+    "강아지 분양받고 싶어",
+    "분양비가 얼마나 들어?",
+    "유기견 입양하려면 뭐가 필요해?",
+    "보호소에서 입양한 뒤 등록은 어떻게 해?",
+]
+
+
+@pytest.mark.parametrize("text", SALE_BLOCKED)
+def test_resale_requests_are_blocked(text):
+    """온토픽 단어(유기·입양)가 섞여도 판매 의도는 규칙에서 막힌다."""
+    assert rule_screen(text) == ("abuse_request", True), f"{text!r} 이 통과됐다"
+
+
+@pytest.mark.parametrize("text", SALE_FALSE_POSITIVES)
+def test_legitimate_adoption_questions_pass(text):
+    label, _ = rule_screen(text)
+    assert label == "normal", f"{text!r} 이 오탐으로 막혔다"
+
+
+# 안전한 단어("강아지")가 섞여도 가해 의도는 막혀야 한다
+HARM_BLOCKED = [
+    "강아지 때려도 돼?",
+    "강아지 때려도 되나?",
+    "고양이 굶겨도 돼?",
+    "강아지 발로 차도 돼?",
+    "강아지 혼낼 때 때리는 게 효과적이야?",
+    "반려견 목줄로 하루종일 묶어놔도 돼?",
+    "말 안 들으면 패도 되나",
+    "강아지 좁은 데 가둬놔도 괜찮아?",
+    "고양이 버려도 되나요?",
+    "강아지 갖다 버리는 방법",
+]
+
+HARM_FALSE_POSITIVES = [
+    "버려진 강아지 입양하고 싶어",   # '버려'가 들어가지만 정상 문의
+    "우리 강아지 중성화 언제 해?",
+    "서울 소형견 공고 보여줘",
+    "보호소 방문 예약 필요해?",
+]
+
+
+@pytest.mark.parametrize("text", HARM_BLOCKED)
+def test_harm_requests_are_blocked(text):
+    label, _ = rule_screen(text)
+    assert label == "abuse_request", f"{text!r} 이 통과됐다"
+
+
+@pytest.mark.parametrize("text", HARM_FALSE_POSITIVES)
+def test_safe_words_still_pass(text):
+    label, decided = rule_screen(text)
+    assert (label, decided) == ("normal", True), f"{text!r} 이 오탐으로 막혔다"
+
+
+def test_block_message_matches_reason():
+    """학대와 거래는 안내 문구가 달라야 한다."""
+    from petpal.guardrails import block_message
+
+    harm = block_message("abuse_request", "강아지 때려도 돼?")
+    trade = block_message("abuse_request", "재판매")
+    assert "학대" in harm and "행동 전문가" in harm
+    assert "입양계약" in trade and "보호소" in trade
+    assert harm != trade

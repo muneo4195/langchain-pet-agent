@@ -25,7 +25,7 @@ from langchain.agents.middleware import (
 from langchain.messages import AIMessage, HumanMessage
 
 from .config import Settings, build_model
-from .guardrails import BLOCK_MESSAGE, mask_pii, rule_screen
+from .guardrails import block_message, mask_pii, rule_screen
 from .prompts import guardrail_prompt, intent_prompt
 from .parsing import is_closed_notice, age_years, match_score, normalize_size, parse_weight_kg, size_of, urgency_of
 from .schemas import AgentResponse, GuardrailClassification, IntentClassification
@@ -91,7 +91,7 @@ def input_guardrail(state: PetPalState, runtime) -> dict[str, Any] | None:
 
     if label != "normal":
         return {
-            "messages": [AIMessage(content=BLOCK_MESSAGE.get(label, BLOCK_MESSAGE["off_topic"]))],
+            "messages": [AIMessage(content=block_message(label, text))],
             "jump_to": "end",
             "guardrail": {"label": label, "confidence": confidence, "blocked": True},
         }

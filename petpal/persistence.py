@@ -39,8 +39,10 @@ def _serializer():
 
     from .schemas import AgentResponse, AnimalCard, PetTravelCard
 
-    return JsonPlusSerializer().with_msgpack_allowlist(
-        [AgentResponse, AnimalCard, PetTravelCard]
+    # with_msgpack_allowlist 는 기본값이 "전체 허용(True)"일 때 병합을 건너뛰므로
+    # 생성자에 직접 넘겨 명시 목록으로 고정한다.
+    return JsonPlusSerializer(
+        allowed_msgpack_modules=[AgentResponse, AnimalCard, PetTravelCard]
     )
 
 
