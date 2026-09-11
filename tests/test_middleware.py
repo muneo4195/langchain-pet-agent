@@ -159,7 +159,7 @@ def test_traits_from_special_mark_can_affect_ranking():
     body, update = run_filter({"items": rows, "total": 2}, state)
     ids = [r["desertionNo"] for r in body["items"]]
     assert ids[0] == "A1"
-    assert "특이사항" in body["items"][0]["match_reason"]
+    assert "4개 일치" in body["items"][0]["match_reason"]
     assert update["last_search_filters"]["gentle"] is True
     assert update["last_search_filters"]["low_activity"] is True
     assert update["last_search_filters"]["apartment"] is True

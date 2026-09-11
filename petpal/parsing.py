@@ -132,8 +132,11 @@ def _long_care_bonus(item: dict, today: date | None = None) -> float:
 # 공고 특이사항(specialMark)은 자유 텍스트라 정확한 필터가 불가능하다.
 # 대신 '언급이 있는 경우에만' 신호로 삼아 보수적으로 반영한다.
 _GENTLE = [r"순하", r"온순", r"얌전", r"사람\s*좋아", r"친화", r"애교"]
+_NOT_GENTLE = [r"사나", r"공격성", r"입질", r"물(?:려고|려는|기도)", r"예민"]
 _LOW_ACTIVITY = [r"활동량.{0,4}(적|낮)", r"조용", r"차분", r"실내\s*위주", r"산책.{0,4}적"]
+_NOT_LOW_ACTIVITY = [r"활동량.{0,4}(많|높)", r"매우\s*활발", r"산책.{0,4}(많|자주)"]
 _APARTMENT = [r"아파트", r"실내", r"실내견", r"집\s*에서", r"실내\s*생활"]
+_NOT_APARTMENT = [r"실외견", r"마당.{0,5}(필요|권장)", r"실내.{0,5}(불가|어려)"]
 
 # 필수(스펙) 조건과 선호(추정) 조건의 가중치를 다르게 둔다.
 # 크기·축종·품종·성별·지역·나이는 사실상 스펙이라 안 맞으면 후보 가치가 크게 떨어지고,
@@ -154,8 +157,16 @@ def match_score(item: dict, wanted: dict, *, today: date | None = None) -> tuple
     def _has_any(patterns: list[str], text: str) -> bool:
         return any(re.search(p, text) for p in patterns)
 
+    def _trait_status(positive: list[str], negative: list[str]) -> bool | None:
+        """True=일치, False=명시적 불일치, None=공고에 판단 근거 없음."""
+        has_positive = _has_any(positive, special)
+        has_negative = _has_any(negative, special)
+        if has_positive == has_negative:  # 둘 다 없거나 서로 모순되는 경우
+            return None
+        return has_positive
+
     hard_checks: list[tuple[bool, str]] = []
-    soft_checks: list[tuple[bool, str]] = []
+    soft_checks: list[tuple[bool | None, str]] = []
 
     if wanted.get("size"):
         got = size_of(parse_weight_kg(item.get("weight")))
@@ -175,13 +186,14 @@ def match_score(item: dict, wanted: dict, *, today: date | None = None) -> tuple
         got = age_years(item.get("age"))
         hard_checks.append((got is not None and got >= wanted["min_age"], f"{wanted['min_age']}살 이상"))
     if wanted.get("gentle"):
-        soft_checks.append((_has_any(_GENTLE, special), "순한(특이사항)"))
+        soft_checks.append((_trait_status(_GENTLE, _NOT_GENTLE), "순한 성격"))
     if wanted.get("low_activity"):
-        soft_checks.append((_has_any(_LOW_ACTIVITY, special), "저활동(특이사항)"))
+        soft_checks.append((_trait_status(_LOW_ACTIVITY, _NOT_LOW_ACTIVITY), "낮은 활동량"))
     if wanted.get("apartment"):
-        soft_checks.append((_has_any(_APARTMENT, special), "아파트/실내(특이사항)"))
+        soft_checks.append((_trait_status(_APARTMENT, _NOT_APARTMENT), "아파트/실내 적합성"))
     if wanted.get("neutered"):
-        soft_checks.append((item.get("neuterYn") == "Y", "중성화 완료"))
+        neutered = str(item.get("neuterYn") or "").upper()
+        soft_checks.append((True if neutered == "Y" else False if neutered == "N" else None, "중성화 완료"))
 
     checks = hard_checks + soft_checks
     bonus = _long_care_bonus(item, today)
@@ -190,19 +202,21 @@ def match_score(item: dict, wanted: dict, *, today: date | None = None) -> tuple
         score = round(min(1.0, 0.5 + bonus), 2)
         reason = "조건이 지정되지 않아 최신 공고 순으로 제시합니다"
     else:
-        hit = [label for ok, label in checks if ok]
+        hit = [label for ok, label in checks if ok is True]
+        unknown = [label for ok, label in soft_checks if ok is None]
+        mismatch = [label for ok, label in checks if ok is False]
         total_weight = _HARD_WEIGHT * len(hard_checks) + _SOFT_WEIGHT * len(soft_checks)
         hit_weight = (
             _HARD_WEIGHT * sum(1 for ok, _ in hard_checks if ok)
-            + _SOFT_WEIGHT * sum(1 for ok, _ in soft_checks if ok)
+            + _SOFT_WEIGHT * sum(1.0 if ok is True else 0.5 if ok is None else 0.0
+                                 for ok, _ in soft_checks)
         )
         score = round(min(1.0, hit_weight / total_weight + bonus), 2)
         reason = f"요청 조건 {len(checks)}개 중 {len(hit)}개 일치" + (f" ({', '.join(hit)})" if hit else "")
-        # 특이사항 기반 조건은 '언급이 없는 경우'가 많아, 근거가 없을 때는 미확인을 분명히 남긴다.
-        wants_traits = any(wanted.get(k) for k in ("gentle", "low_activity", "apartment"))
-        hit_trait = any("특이사항" in h for h in hit)
-        if wants_traits and not hit_trait:
-            reason += " / 특이사항 없음" if not special.strip() else " / 특이사항 근거 없음"
+        if unknown:
+            reason += f" / {len(unknown)}개 미확인 ({', '.join(unknown)})"
+        if mismatch:
+            reason += f" / {len(mismatch)}개 불일치 ({', '.join(mismatch)})"
 
     if bonus > 0:
         days = care_duration_days(item.get("happenDt"), today)
